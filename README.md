@@ -1,0 +1,106 @@
+```mermaid
+---
+config:
+  theme: base
+---
+sequenceDiagram
+    autonumber
+    participant SASE as Sending ASE
+    
+    box Sending <br>Rafiki Admin API
+    participant SGQL as Sending Admin API
+    end
+
+    box Sending Rafiki Domain
+    participant SPS as Payment Service
+    participant SLS as Liquidity Service
+    end
+
+    box Sending Rafiki <br>Application
+    participant SOP as Open Payments <br> Server
+    participant SILP as ILP <br>Connector
+    end
+
+    box Receving Rafiki
+    participant RILP as ILP Connector
+    participant ROP as Open Payments Server
+    end
+
+    box Receving Rafiki <br> Domain
+    participant RLS as Liquidity Service
+    participant RPS as Payment Service
+    participant RGQL as Receiving Admin API
+    end
+
+    participant RASE as Receiving ASE
+
+    rect rgba(0, 0, 0, .05)
+    note right of SASE: Create incoming payment
+    SASE->>SGQL: Create incoming payment
+    SGQL->>SPS: Create incoming payment 
+    SPS->>ROP: Create incoming payment
+    ROP->>RPS: Create incoming payment
+    RPS->>RPS: Persist incoming payment
+    ROP->>SPS: Response
+    SPS->>SPS: Persist remote incoming payment
+    end
+
+
+    rect rgba(0, 0, 0, .05)
+    note right of SASE: Create quote
+    SASE->>SGQL: Create quote 
+    SGQL->>SPS: Create quote 
+    SPS->>SPS: Try to fetch remote incoming payment (assume found)
+    SPS->>SILP: Start quote (rate probe)
+    SILP->>RILP: Send rate probe packet
+    RILP->>SILP: Accepted
+    RILP-->>RPS: Rate probing packet received event
+    RPS->>RPS: Get rates (from Rate Service)
+    RPS-->>RILP: Rate probing packet accepted event
+    RILP->>SILP: Send reject packet with amount
+    SILP->>RILP: Accepted
+    SILP-->>SPS: Reject rate probe packet received event (with peer & amount)
+    SPS->>SPS: Create quote (and persist)
+    SPS->>SGQL: Return created quote
+    SGQL->>SASE: Return created Quote
+    end
+
+    rect rgba(0, 0, 0, .05)
+    note right of SASE: Create outgoing payment
+    SASE->>SGQL: Create outgoing payment <br>(already funded)
+    SGQL->>SPS: Create outgoing payment
+    SPS->>SPS: Fetch quote
+    SPS->>SPS: Try fetch incoming payment (assume found)
+    SPS->>SLS: Check liquidity <br>and reserve funds on sending wallet
+    SPS->>SPS: Publish outgoing payment prepared event
+    SPS->>SGQL: Respond OK, on it
+    SGQL->>SASE: Response OK, on it
+    end
+
+    rect rgba(0, 0, 0, .05)
+    note right of SASE: Outgoing payment worker<br>(outgoing payment prepared event)
+    SPS->>SILP: Start payment
+    loop
+    SILP->>RILP: Send prepare packet
+    RILP->>SILP: Prepare packet accepted
+    RILP-->>RPS: Prepare packet received event (with peerId)
+    RPS->>RPS: Fetch incoming payment & check and validate it
+    note over RPS, RLS: FX involved if<br> peering asset != incoming payment asset
+    RPS->>RLS: Credit receiving wallet address<br> debit peer account
+    RPS->>RPS: Check if incoming payment completed<br>publish event if so
+    RPS-->>RILP: Prepare packet accepted event <br> (with peerId, and whether incoming payment is completed)
+    RILP->>SILP: Send fulfill packet
+    SILP->>RILP: Accepted
+    SILP-->>SPS: Fulfill packet received event (with peer & partial amount)
+    SPS->>SPS: Fetch outgoing payment
+    note over SPS, SLS: FX involved if<br> peering asset != outgoing payment asset
+    SPS->>SLS: Debit wallet address <br>and credit peer for fulfilled amount
+    SPS->>SPS: Increment sent amount in outgoing payment<br>and persist
+    SPS->>SPS: Check if outgoing payment is completed, publish event if so
+    end
+
+
+
+    end
+    
+```
