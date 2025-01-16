@@ -743,6 +743,8 @@ export class PaymentService {
       ]);
 
       await this.paymentEventPublisher.publish(events);
+
+      return outgoingPayment.id;
     } else {
       const walletAddressFundRequest: FundWalletAddressLiquidityRequest = {
         id: crypto.randomUUID(),
@@ -784,6 +786,7 @@ export class PaymentService {
       };
 
       await this.paymentEventPublisher.publish([outgoingPaymentPreparedEvent]);
+      return outgoingPayment.id;
     }
   }
 

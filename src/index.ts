@@ -1,9 +1,9 @@
+import { createApp } from "./app";
 import { EventPublisher } from "./event";
 import { LiquidityService } from "./liquidity";
 import {
   IncomingPayment,
   OutgoingPayment,
-  PaymentEvent,
   PaymentService,
   Quote,
   RemoteIncomingPayment,
@@ -13,13 +13,13 @@ import { RatesService } from "./rates";
 import { InMemoryRepository } from "./repository";
 import { WalletAddress, WalletAddressService } from "./wallet-address";
 
-const walletAddressService = new WalletAddressService(
+export const walletAddressService = new WalletAddressService(
   new InMemoryRepository<WalletAddress>()
 );
-const peerService = new PeerService(new InMemoryRepository<Peer>());
-const ratesService = new RatesService();
-const liquidityService = new LiquidityService();
-const paymentSerivce = new PaymentService(
+export const peerService = new PeerService(new InMemoryRepository<Peer>());
+export const ratesService = new RatesService();
+export const liquidityService = new LiquidityService();
+export const paymentService = new PaymentService(
   walletAddressService,
   peerService,
   ratesService,
@@ -28,5 +28,26 @@ const paymentSerivce = new PaymentService(
   new InMemoryRepository<RemoteIncomingPayment>(),
   new InMemoryRepository<OutgoingPayment>(),
   new InMemoryRepository<Quote>(),
-  new EventPublisher<PaymentEvent>()
+  new EventPublisher()
 );
+
+(async () => {
+  const receiverWalletAddressId =
+    await walletAddressService.createWalletAddress({
+      id: "a1469618-077a-447d-b5a3-a9ed11265a64",
+      url: "",
+      assetCode: "USD",
+      assetScale: 2,
+    });
+
+  const senderWalletAddressId = await walletAddressService.createWalletAddress({
+    id: "a1469618-077a-447d-b5a3-a9ed11265a63",
+    url: "",
+    assetCode: "USD",
+    assetScale: 2,
+  });
+
+  const start = createApp(paymentService);
+
+  await start();
+})();
