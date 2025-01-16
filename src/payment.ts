@@ -12,6 +12,7 @@ import { RatesServiceAdapter } from "./rates";
 import { Repository } from "./repository";
 import { Amount, Asset } from "./shared";
 import { WalletAddress, WalletAddressServiceAdapter } from "./wallet-address";
+import { Event } from "./event";
 
 class WalletAddressNotFoundError extends Error {}
 class WalletAddressInactiveError extends Error {}
@@ -33,7 +34,7 @@ class OutgoingPaymentInvalidStateError extends Error {}
 interface CreateIncomingPaymentRequest {
   id?: string;
   walletAddressId: string; // we can consider using URIs here: might be easier for integrators to deal with + gives us flexibility particularly when it comes to paying into incoming payments on remote Rafikis
-  expiresAt: Date;
+  expiresAt?: Date;
   incomingAmount?: Amount;
 }
 
@@ -84,30 +85,53 @@ interface RemoteIncomingPaymentRepository
 interface QuoteRepository extends Repository<Quote> {}
 interface OutgoingPaymentRepository extends Repository<OutgoingPayment> {}
 
-interface IncomingPaymentCreatedEvent {
-  incomingPayment: IncomingPayment;
+export enum PaymentEventType {
+  INCOMING_PAYMENT_CREATED = "INCOMING_PAYMENT_CREATED",
+  INCOMING_PAYMENT_COMPLETED = "INCOMING_PAYMENT_COMPLETED",
+  OUTGOING_PAYMENT_COMPLETED = "OUTGOING_PAYMENT_COMPLETED",
+  OUTGOING_PAYMENT_PREPARED = "OUTGOING_PAYMENT_PREPARED",
+  ILP_PREPARE_PACKET_ACCEPTED = "ILP_PREPARE_PACKET_ACCEPTED",
 }
 
-interface OutgoingPaymentPreparedEvent {
-  outgoingPaymentId: string;
-  debitAmount: Amount;
-  receiveAmount: Amount;
-  quoteExpiresAt: Date;
-  incomingPaymentId: string;
-  ilpDetails: IlpDetails;
+interface IncomingPaymentCreatedEvent extends Event {
+  type: PaymentEventType.INCOMING_PAYMENT_CREATED;
+  data: {
+    incomingPayment: IncomingPayment;
+  };
 }
 
-interface IncomingPaymentCompletedEvent {
-  incomingPayment: IncomingPayment;
+interface OutgoingPaymentPreparedEvent extends Event {
+  type: PaymentEventType.OUTGOING_PAYMENT_PREPARED;
+  data: {
+    outgoingPaymentId: string;
+    debitAmount: Amount;
+    receiveAmount: Amount;
+    quoteExpiresAt: Date;
+    incomingPaymentId: string;
+    ilpDetails: IlpDetails;
+  };
 }
 
-interface OutgoingPaymentCompletedEvent {
-  outgoingPayment: OutgoingPayment;
+interface IncomingPaymentCompletedEvent extends Event {
+  type: PaymentEventType.INCOMING_PAYMENT_COMPLETED;
+  data: {
+    incomingPayment: IncomingPayment;
+  };
 }
 
-interface IlpPreparePacketAcceptedEvent {
-  preparePacketId: string;
-  incomingPaymentCompleted: boolean;
+interface OutgoingPaymentCompletedEvent extends Event {
+  type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED;
+  data: {
+    outgoingPayment: OutgoingPayment;
+  };
+}
+
+interface IlpPreparePacketAcceptedEvent extends Event {
+  type: PaymentEventType.ILP_PREPARE_PACKET_ACCEPTED;
+  data: {
+    preparePacketId: string;
+    incomingPaymentCompleted: boolean;
+  };
 }
 
 export type PaymentEvent =
@@ -184,8 +208,9 @@ interface CreateOutgoingPaymentFromQuoteRequest {
 }
 
 export class PaymentService {
-  INCOMING_PAYMENT_MAX_EXPIRY_MS = 2592000000; // 30 days
-  QUOTE_EXPIRY_MS = 1000 * 60 * 10;
+  private INCOMING_PAYMENT_MAX_EXPIRY_MS = 2592000000; // 30 days
+  private INCOMING_PAYMENT_DEFAULT_EXPIRY = 1000 * 60 * 10;
+  private QUOTE_EXPIRY_MS = 1000 * 60 * 10;
 
   constructor(
     private walletAddressService: WalletAddressServiceAdapter,
@@ -248,7 +273,10 @@ export class PaymentService {
 
       const events: PaymentEvent[] = [];
       const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
-        outgoingPayment,
+        type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
+        data: {
+          outgoingPayment,
+        },
       };
 
       if (event.didCompleteIncomingPayment) {
@@ -286,10 +314,7 @@ export class PaymentService {
       throw new IncomingPaymentInvalidStateError();
     }
 
-    // USD 2: 10 -> USD 9 10
-
     if (peer.asset.code === incomingPayment.asset.code) {
-      // We lost precision
       if (peer.asset.scale > incomingPayment.asset.scale) {
         throw new IncomingPaymentInvalidStateError();
       }
@@ -332,15 +357,21 @@ export class PaymentService {
 
       if (incomingPaymentCompleted) {
         const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
-          incomingPayment,
+          type: PaymentEventType.INCOMING_PAYMENT_COMPLETED,
+          data: {
+            incomingPayment,
+          },
         };
 
         paymentEvents.push(incomingPaymentCompletedEvent);
       }
 
       const ilpPreparePacketAcceptedEvent: IlpPreparePacketAcceptedEvent = {
-        incomingPaymentCompleted,
-        preparePacketId: event.packetId,
+        type: PaymentEventType.ILP_PREPARE_PACKET_ACCEPTED,
+        data: {
+          incomingPaymentCompleted,
+          preparePacketId: event.packetId,
+        },
       };
 
       paymentEvents.push(ilpPreparePacketAcceptedEvent);
@@ -389,18 +420,23 @@ export class PaymentService {
     }
 
     if (
-      request.expiresAt.getTime() <= Date.now() ||
-      request.expiresAt.getTime() >
-        Date.now() + this.INCOMING_PAYMENT_MAX_EXPIRY_MS
+      request.expiresAt &&
+      (request.expiresAt.getTime() <= Date.now() ||
+        request.expiresAt.getTime() >
+          Date.now() + this.INCOMING_PAYMENT_MAX_EXPIRY_MS)
     ) {
       throw new InvalidIncomingPaymentExpiryError();
     }
+
+    const expiresAt =
+      request.expiresAt ??
+      new Date(Date.now() + this.INCOMING_PAYMENT_DEFAULT_EXPIRY);
 
     const newIncomingPayment: IncomingPayment = {
       id,
       incomingAmount: request.incomingAmount?.value,
       receivedAmount: 0n,
-      expiresAt: request.expiresAt,
+      expiresAt,
       walletAddressId: request.walletAddressId,
       type: "LOCAL",
       state: IncomingPaymentState.CREATED,
@@ -414,7 +450,10 @@ export class PaymentService {
     await this.incomingPaymentRepository.store(newIncomingPayment);
     await this.paymentEventPublisher.publish([
       {
-        incomingPayment: newIncomingPayment,
+        type: PaymentEventType.INCOMING_PAYMENT_CREATED,
+        data: {
+          incomingPayment: newIncomingPayment,
+        },
       },
     ]);
 
@@ -591,6 +630,8 @@ export class PaymentService {
       throw new QuoteNotFoundError();
     }
 
+    // TODO: Check quote hasn't been used already
+
     if (new Date() >= quote.expiresAt) {
       throw new QuoteExpiredError();
     }
@@ -666,7 +707,10 @@ export class PaymentService {
       const events: PaymentEvent[] = [];
 
       const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
-        outgoingPayment,
+        type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
+        data: {
+          outgoingPayment,
+        },
       };
 
       events.push(outgoingPaymentCompletedEvent);
@@ -685,7 +729,10 @@ export class PaymentService {
       // @ts-ignore
       if (incomingPayment.state === IncomingPaymentState.COMPLETED) {
         const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
-          incomingPayment,
+          type: PaymentEventType.INCOMING_PAYMENT_COMPLETED,
+          data: {
+            incomingPayment,
+          },
         };
         events.push(incomingPaymentCompletedEvent);
       }
@@ -725,12 +772,15 @@ export class PaymentService {
       await this.outgoingPaymentRepository.store(outgoingPayment);
 
       const outgoingPaymentPreparedEvent: OutgoingPaymentPreparedEvent = {
-        outgoingPaymentId: outgoingPayment.id,
-        debitAmount: quote.debitAmount,
-        receiveAmount: quote.receiveAmount,
-        incomingPaymentId: outgoingPayment.incomingPaymentId,
-        quoteExpiresAt: quote.expiresAt,
-        ilpDetails: incomingPayment.ilpDetails,
+        type: PaymentEventType.OUTGOING_PAYMENT_PREPARED,
+        data: {
+          outgoingPaymentId: outgoingPayment.id,
+          debitAmount: quote.debitAmount,
+          receiveAmount: quote.receiveAmount,
+          incomingPaymentId: outgoingPayment.incomingPaymentId,
+          quoteExpiresAt: quote.expiresAt,
+          ilpDetails: incomingPayment.ilpDetails,
+        },
       };
 
       await this.paymentEventPublisher.publish([outgoingPaymentPreparedEvent]);

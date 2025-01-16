@@ -1,11 +1,17 @@
-interface EventPublisherAdapter<T> {
-  publish(events: T[]): Promise<void>;
+export interface Event {
+  type: string;
+  data: Record<string, unknown>;
 }
 
-export class EventPublisher<T> implements EventPublisherAdapter<T> {
-  private events: T[] = [];
+interface EventPublisherAdapter {
+  publish(events: Event[]): Promise<void>;
+}
 
-  public async publish(events: T[]): Promise<void> {
-    this.events = this.events.concat(events);
+export class EventPublisher implements EventPublisherAdapter {
+  public async publish(events: Event[]): Promise<void> {
+    for (const event of events) {
+      console.log(`Publishing ${event.type}`);
+      console.dir(event.data, { depth: null });
+    }
   }
 }
