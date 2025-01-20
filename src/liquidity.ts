@@ -7,67 +7,57 @@ export enum LiquidityRequestType {
   WALLET_ADDRESS_TO_PEER = "WALLET_ADDRESS_TO_PEER",
 }
 
-export interface LiquidityRequest<T = unknown> {
+export interface LiquidityRequest {
   id: string;
   type: LiquidityRequestType;
-  data: T;
+  data: Record<string, unknown>;
 }
 
 export interface WalletToWalletAddressLiquidityRequest
-  extends LiquidityRequest<WalletToWalletAddressRequestData> {
+  extends LiquidityRequest {
   type: LiquidityRequestType.WALLET_ADDRESS_TO_WALLET_ADDRESS;
-}
-interface WalletToWalletAddressRequestData {
-  sourceWalletAddressId: string;
-  sourceAmount: bigint;
-  destinationWalletAddressId: string;
-  destinationAmount: bigint;
+  data: {
+    sourceWalletAddressId: string;
+    sourceAmount: Amount;
+    destinationWalletAddressId: string;
+    destinationAmount: Amount;
+  };
 }
 
-export interface FundWalletAddressLiquidityRequest
-  extends LiquidityRequest<FundWalletAddressRequestData> {
+export interface FundWalletAddressLiquidityRequest extends LiquidityRequest {
   type: LiquidityRequestType.FUND_WALLET_ADDRESS;
-}
-interface FundWalletAddressRequestData {
-  walletAddressId: string;
-  amount: bigint;
+  data: {
+    walletAddressId: string;
+    amount: Amount;
+  };
 }
 
-export interface WalletAddressToPeerLiquidityRequest
-  extends LiquidityRequest<WalletAddressToPeerRequestData> {
+export interface WalletAddressToPeerLiquidityRequest extends LiquidityRequest {
   type: LiquidityRequestType.WALLET_ADDRESS_TO_PEER;
+  data: {
+    peerId: string;
+    walletAddressId: string;
+    amount: Amount;
+  };
 }
 
-interface WalletAddressToPeerRequestData {
-  peerId: string;
-  walletAddressId: string;
-  amount: Amount;
-}
-
-interface PeerToWalletAddressRequestData {
-  peerId: string;
-  walletAddressId: string;
-  amount: Amount;
-}
-
-export interface PeerToWalletAddressLiquidityRequest
-  extends LiquidityRequest<PeerToWalletAddressRequestData> {
+export interface PeerToWalletAddressLiquidityRequest extends LiquidityRequest {
   type: LiquidityRequestType.PEER_TO_WALLET_ADDRESS;
-}
-interface PeerToWalletAddressRequestData {
-  peerId: string;
-  walletAddressId: string;
-  amount: Amount;
+  data: {
+    peerId: string;
+    walletAddressId: string;
+    amount: Amount;
+  };
 }
 
 export interface LiquidityServiceAdapter {
-  execute(requests: LiquidityRequest<unknown>[]): Promise<void>;
+  execute(requests: LiquidityRequest[]): Promise<void>;
 }
 
 export class LiquidityService implements LiquidityServiceAdapter {
-  requests: LiquidityRequest<unknown>[] = [];
+  requests: LiquidityRequest[] = [];
 
-  public async execute(requests: LiquidityRequest<unknown>[]): Promise<void> {
-    this.requests = this.requests.concat(requests);
+  public async execute(requests: LiquidityRequest[]): Promise<void> {
+    // not implemented
   }
 }
