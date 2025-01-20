@@ -224,164 +224,6 @@ export class PaymentService {
     private paymentEventPublisher: PaymentEventPublisher
   ) {}
 
-  public async handleIlpFulfillPacketReceivedEvent(
-    event: IlpFulfillPacketReceivedEvent
-  ) {
-    const outgoingPayment = await this.outgoingPaymentRepository.fetchById(
-      event.outgoingPaymentId
-    );
-
-    if (!outgoingPayment) {
-      throw new OutgoingPaymentNotFoundError();
-    }
-
-    if (outgoingPayment.state !== OutgoingPaymentState.FUNDED) {
-      throw new OutgoingPaymentInvalidStateError();
-    }
-
-    if (event.amount.assetCode === outgoingPayment.asset.code) {
-      // We lost precision
-      if (event.amount.assetScale > outgoingPayment.asset.scale) {
-        throw new OutgoingPaymentInvalidStateError();
-      }
-
-      const transfer: WalletAddressToPeerLiquidityRequest = {
-        id: event.packetId,
-        type: LiquidityRequestType.WALLET_ADDRESS_TO_PEER,
-        data: {
-          peerId: event.peerId,
-          walletAddressId: outgoingPayment.senderWalletAddressId,
-          amount: event.amount,
-        },
-      };
-
-      await this.liquidityService.execute([transfer]);
-
-      const scaledRate = BigInt(
-        10 ** (outgoingPayment.asset.scale - event.amount.assetScale)
-      );
-
-      const microPayment: MicroPayment = {
-        requestId: event.packetId,
-        ilpPeerId: event.peerId,
-        asset: outgoingPayment.asset,
-        amount: event.amount.value * scaledRate,
-        method: "ILP",
-      };
-
-      this.addMicroPaymentToOutgoingPayment(outgoingPayment, microPayment);
-
-      const events: PaymentEvent[] = [];
-      const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
-        type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
-        data: {
-          outgoingPayment,
-        },
-      };
-
-      if (event.didCompleteIncomingPayment) {
-        outgoingPayment.state = OutgoingPaymentState.COMPLETED;
-        events.push(outgoingPaymentCompletedEvent);
-      }
-
-      await this.outgoingPaymentRepository.store(outgoingPayment);
-      await this.paymentEventPublisher.publish(events);
-    } else {
-      throw new Error("not implemented");
-    }
-  }
-
-  public async handleIlpPreparePacketReceivedEvent(
-    event: IlpPreparePacketReceivedEvent
-  ) {
-    const peer = await this.peerService.getById(event.peerId);
-
-    if (!peer) {
-      throw new PeerNotFoundError();
-    }
-
-    const incomingPayment = await this.incomingPaymentRepository.fetchById(
-      event.incomingPaymentId
-    );
-
-    if (!incomingPayment) {
-      // Send a packet reject event
-      throw new IncomingPaymentNotFoundError();
-    }
-
-    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
-      // Send a packet reject event
-      throw new IncomingPaymentInvalidStateError();
-    }
-
-    if (peer.asset.code === incomingPayment.asset.code) {
-      if (peer.asset.scale > incomingPayment.asset.scale) {
-        throw new IncomingPaymentInvalidStateError();
-      }
-
-      const transfer: PeerToWalletAddressLiquidityRequest = {
-        id: event.packetId,
-        type: LiquidityRequestType.PEER_TO_WALLET_ADDRESS,
-        data: {
-          peerId: event.peerId,
-          walletAddressId: incomingPayment.walletAddressId,
-          amount: {
-            assetCode: peer.asset.code,
-            assetScale: peer.asset.scale,
-            value: event.amount,
-          },
-        },
-      };
-
-      await this.liquidityService.execute([transfer]);
-
-      const scaledRate = BigInt(
-        10 ** (incomingPayment.asset.scale - peer.asset.scale)
-      );
-
-      this.addMicroPaymentToIncomingPayment(incomingPayment, {
-        requestId: event.packetId,
-        ilpPeerId: event.peerId,
-        amount: event.amount * scaledRate,
-        method: "ILP",
-        asset: incomingPayment.asset,
-      });
-
-      await this.incomingPaymentRepository.store(incomingPayment);
-
-      const paymentEvents: PaymentEvent[] = [];
-
-      const incomingPaymentCompleted =
-        // @ts-ignore
-        incomingPayment.state === IncomingPaymentState.COMPLETED;
-
-      if (incomingPaymentCompleted) {
-        const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
-          type: PaymentEventType.INCOMING_PAYMENT_COMPLETED,
-          data: {
-            incomingPayment,
-          },
-        };
-
-        paymentEvents.push(incomingPaymentCompletedEvent);
-      }
-
-      const ilpPreparePacketAcceptedEvent: IlpPreparePacketAcceptedEvent = {
-        type: PaymentEventType.ILP_PREPARE_PACKET_ACCEPTED,
-        data: {
-          incomingPaymentCompleted,
-          preparePacketId: event.packetId,
-        },
-      };
-
-      paymentEvents.push(ilpPreparePacketAcceptedEvent);
-
-      await this.paymentEventPublisher.publish(paymentEvents);
-    } else {
-      throw new Error("not implemented");
-    }
-  }
-
   public async createIncomingPayment(
     request: CreateIncomingPaymentRequest
   ): Promise<string> {
@@ -458,6 +300,15 @@ export class PaymentService {
     ]);
 
     return id;
+  }
+
+  private async fetchIncomingPayment(
+    incomingPaymentId: string
+  ): Promise<IncomingPayment | RemoteIncomingPayment | undefined> {
+    return (
+      (await this.incomingPaymentRepository.fetchById(incomingPaymentId)) ||
+      (await this.remoteIncomingPaymentRepository.fetchById(incomingPaymentId))
+    );
   }
 
   public async createQuote(request: CreateQuoteRequest): Promise<string> {
@@ -559,239 +410,6 @@ export class PaymentService {
     await this.quoteRepository.store(newQuote);
 
     return id;
-  }
-
-  private async fetchIncomingPayment(
-    incomingPaymentId: string
-  ): Promise<IncomingPayment | RemoteIncomingPayment | undefined> {
-    return (
-      (await this.incomingPaymentRepository.fetchById(incomingPaymentId)) ||
-      (await this.remoteIncomingPaymentRepository.fetchById(incomingPaymentId))
-    );
-  }
-
-  private addMicroPaymentToIncomingPayment(
-    incomingPayment: IncomingPayment,
-    microPayment: MicroPayment
-  ) {
-    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
-      throw new IncomingPaymentCannotReceiveMicroPayment();
-    }
-
-    incomingPayment.microPayments.push(microPayment);
-    incomingPayment.receivedAmount += microPayment.amount; // received amount can be larger than incoming amount because of FX
-
-    if (
-      incomingPayment.incomingAmount &&
-      incomingPayment.receivedAmount >= incomingPayment.incomingAmount
-    ) {
-      incomingPayment.state = IncomingPaymentState.COMPLETED;
-    }
-  }
-
-  private addMicroPaymentToOutgoingPayment(
-    outgoingPayment: OutgoingPayment,
-    microPayment: MicroPayment
-  ) {
-    if (outgoingPayment.state !== OutgoingPaymentState.FUNDED) {
-      throw new OutgoingPaymentInvalidStateError();
-    }
-
-    outgoingPayment.microPayments.push(microPayment);
-    outgoingPayment.sentAmount += microPayment.amount;
-
-    // TODO: determine whether this can/should happen
-    if (outgoingPayment.sentAmount > outgoingPayment.debitAmount) {
-      throw new OutgoingPaymentInvalidStateError();
-    }
-
-    if (outgoingPayment.sentAmount === outgoingPayment.debitAmount) {
-      outgoingPayment.state = OutgoingPaymentState.COMPLETED;
-    }
-  }
-
-  public async createOutgoingPaymentFromQuote(
-    request: CreateOutgoingPaymentFromQuoteRequest
-  ) {
-    const [walletAddress, quote] = await Promise.all([
-      this.walletAddressService.getById(request.senderWalletAddressId),
-      this.quoteRepository.fetchById(request.quoteId),
-    ]);
-
-    if (!walletAddress) {
-      throw new WalletAddressNotFoundError();
-    }
-
-    if (!walletAddress.isActive) {
-      throw new WalletAddressInactiveError();
-    }
-
-    if (!quote) {
-      throw new QuoteNotFoundError();
-    }
-
-    // TODO: Check quote hasn't been used already
-
-    if (new Date() >= quote.expiresAt) {
-      throw new QuoteExpiredError();
-    }
-
-    const incomingPayment = await this.fetchIncomingPayment(
-      quote.incomingPaymentId
-    );
-
-    if (!incomingPayment) {
-      throw new IncomingPaymentNotFoundError();
-    }
-
-    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
-      throw new IncomingPaymentInvalidStateError();
-    }
-
-    // Like the remote one, this could also be an event
-    if (incomingPayment.type === "LOCAL") {
-      const liquidityRequests: LiquidityRequest[] = [];
-      const walletAddressFundRequest: FundWalletAddressLiquidityRequest = {
-        id: crypto.randomUUID(),
-        type: LiquidityRequestType.FUND_WALLET_ADDRESS,
-        data: {
-          walletAddressId: request.senderWalletAddressId,
-          amount: quote.debitAmount.value,
-        },
-      };
-
-      liquidityRequests.push(walletAddressFundRequest);
-
-      const transferRequest: WalletToWalletAddressLiquidityRequest = {
-        id: crypto.randomUUID(),
-        type: LiquidityRequestType.WALLET_ADDRESS_TO_WALLET_ADDRESS,
-        data: {
-          sourceWalletAddressId: request.senderWalletAddressId,
-          sourceAmount: quote.debitAmount.value,
-          destinationWalletAddressId: incomingPayment.walletAddressId,
-          destinationAmount: quote.receiveAmount.value,
-        },
-      };
-
-      liquidityRequests.push(transferRequest);
-
-      await this.liquidityService.execute(liquidityRequests);
-
-      const outgoingPaymentId = crypto.randomUUID();
-
-      const outgoingPayment: OutgoingPayment = {
-        id: outgoingPaymentId,
-        quoteId: quote.id,
-        senderWalletAddressId: walletAddress.id,
-        asset: {
-          code: walletAddress.assetCode,
-          scale: walletAddress.assetScale,
-        },
-        debitAmount: quote.debitAmount.value,
-        sentAmount: 0n,
-        incomingPaymentId: incomingPayment.id,
-        state: "COMPLETED",
-        microPayments: [
-          {
-            requestId: outgoingPaymentId,
-            amount: quote.debitAmount.value,
-            method: "LOCAL",
-            asset: {
-              scale: quote.debitAmount.assetScale,
-              code: quote.debitAmount.assetCode,
-            },
-          },
-        ],
-      };
-
-      const events: PaymentEvent[] = [];
-
-      const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
-        type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
-        data: {
-          outgoingPayment,
-        },
-      };
-
-      events.push(outgoingPaymentCompletedEvent);
-
-      this.addMicroPaymentToIncomingPayment(incomingPayment, {
-        requestId: outgoingPaymentId,
-        amount: quote.receiveAmount.value,
-        method: "LOCAL",
-        asset: {
-          scale: quote.receiveAmount.assetScale,
-          code: quote.receiveAmount.assetCode,
-        },
-      });
-
-      // MicroPayment might have completed the incoming payment
-      // @ts-ignore
-      if (incomingPayment.state === IncomingPaymentState.COMPLETED) {
-        const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
-          type: PaymentEventType.INCOMING_PAYMENT_COMPLETED,
-          data: {
-            incomingPayment,
-          },
-        };
-        events.push(incomingPaymentCompletedEvent);
-      }
-
-      await Promise.all([
-        this.outgoingPaymentRepository.store(outgoingPayment),
-        this.incomingPaymentRepository.store(incomingPayment),
-      ]);
-
-      await this.paymentEventPublisher.publish(events);
-
-      return outgoingPayment.id;
-    } else {
-      const walletAddressFundRequest: FundWalletAddressLiquidityRequest = {
-        id: crypto.randomUUID(),
-        type: LiquidityRequestType.FUND_WALLET_ADDRESS,
-        data: {
-          walletAddressId: request.senderWalletAddressId,
-          amount: quote.debitAmount.value,
-        },
-      };
-
-      await this.liquidityService.execute([walletAddressFundRequest]);
-
-      const outgoingPayment: OutgoingPayment = {
-        id: crypto.randomUUID(),
-        quoteId: quote.id,
-        senderWalletAddressId: walletAddress.id,
-        asset: {
-          code: walletAddress.assetCode,
-          scale: walletAddress.assetScale,
-        },
-        debitAmount: quote.debitAmount.value,
-        sentAmount: 0n,
-        incomingPaymentId: incomingPayment.id,
-        state: "FUNDED",
-        microPayments: [],
-      };
-      await this.outgoingPaymentRepository.store(outgoingPayment);
-
-      const outgoingPaymentPreparedEvent: OutgoingPaymentPreparedEvent = {
-        type: PaymentEventType.OUTGOING_PAYMENT_PREPARED,
-        data: {
-          outgoingPaymentId: outgoingPayment.id,
-          debitAmount: quote.debitAmount,
-          receiveAmount: quote.receiveAmount,
-          incomingPaymentId: outgoingPayment.incomingPaymentId,
-          quoteExpiresAt: quote.expiresAt,
-          ilpDetails: incomingPayment.ilpDetails,
-        },
-      };
-
-      await this.paymentEventPublisher.publish([outgoingPaymentPreparedEvent]);
-      return outgoingPayment.id;
-    }
-  }
-
-  public async createOutgoingPaymentFromIncomingPayment() {
-    throw new Error("not implemented");
   }
 
   private async calculateQuoteFromDebitAmount({
@@ -978,5 +596,387 @@ export class PaymentService {
       },
       exchangeRate: conversionResponse.exchangeRate,
     };
+  }
+
+  public async createOutgoingPaymentFromQuote(
+    request: CreateOutgoingPaymentFromQuoteRequest
+  ) {
+    const [walletAddress, quote] = await Promise.all([
+      this.walletAddressService.getById(request.senderWalletAddressId),
+      this.quoteRepository.fetchById(request.quoteId),
+    ]);
+
+    if (!walletAddress) {
+      throw new WalletAddressNotFoundError();
+    }
+
+    if (!walletAddress.isActive) {
+      throw new WalletAddressInactiveError();
+    }
+
+    if (!quote) {
+      throw new QuoteNotFoundError();
+    }
+
+    // TODO: Check quote hasn't been used already
+
+    if (quote.expiresAt <= new Date()) {
+      throw new QuoteExpiredError();
+    }
+
+    const incomingPayment = await this.fetchIncomingPayment(
+      quote.incomingPaymentId
+    );
+
+    if (!incomingPayment) {
+      throw new IncomingPaymentNotFoundError();
+    }
+
+    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
+      throw new IncomingPaymentInvalidStateError();
+    }
+
+    // Like the remote one, this could also be an event
+    if (incomingPayment.type === "LOCAL") {
+      const liquidityRequests: LiquidityRequest[] = [];
+      const walletAddressFundRequest: FundWalletAddressLiquidityRequest = {
+        id: crypto.randomUUID(),
+        type: LiquidityRequestType.FUND_WALLET_ADDRESS,
+        data: {
+          walletAddressId: request.senderWalletAddressId,
+          amount: quote.debitAmount,
+        },
+      };
+
+      liquidityRequests.push(walletAddressFundRequest);
+
+      const transferRequest: WalletToWalletAddressLiquidityRequest = {
+        id: crypto.randomUUID(),
+        type: LiquidityRequestType.WALLET_ADDRESS_TO_WALLET_ADDRESS,
+        data: {
+          sourceWalletAddressId: request.senderWalletAddressId,
+          sourceAmount: quote.debitAmount,
+          destinationWalletAddressId: incomingPayment.walletAddressId,
+          destinationAmount: quote.receiveAmount,
+        },
+      };
+
+      liquidityRequests.push(transferRequest);
+
+      await this.liquidityService.execute(liquidityRequests);
+
+      const outgoingPaymentId = crypto.randomUUID();
+
+      const outgoingPayment: OutgoingPayment = {
+        id: outgoingPaymentId,
+        quoteId: quote.id,
+        senderWalletAddressId: walletAddress.id,
+        asset: {
+          code: walletAddress.assetCode,
+          scale: walletAddress.assetScale,
+        },
+        debitAmount: quote.debitAmount.value,
+        sentAmount: quote.debitAmount.value,
+        incomingPaymentId: incomingPayment.id,
+        state: "COMPLETED",
+        microPayments: [
+          {
+            requestId: outgoingPaymentId,
+            amount: quote.debitAmount.value,
+            method: "LOCAL",
+            asset: {
+              scale: quote.debitAmount.assetScale,
+              code: quote.debitAmount.assetCode,
+            },
+          },
+        ],
+      };
+
+      const events: PaymentEvent[] = [];
+
+      const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
+        type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
+        data: {
+          outgoingPayment,
+        },
+      };
+
+      events.push(outgoingPaymentCompletedEvent);
+
+      this.addMicroPaymentToIncomingPayment(incomingPayment, {
+        requestId: outgoingPaymentId,
+        amount: quote.receiveAmount.value,
+        method: "LOCAL",
+        asset: {
+          scale: quote.receiveAmount.assetScale,
+          code: quote.receiveAmount.assetCode,
+        },
+      });
+
+      // MicroPayment might have completed the incoming payment
+      // @ts-ignore
+      if (incomingPayment.state === IncomingPaymentState.COMPLETED) {
+        const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
+          type: PaymentEventType.INCOMING_PAYMENT_COMPLETED,
+          data: {
+            incomingPayment,
+          },
+        };
+        events.push(incomingPaymentCompletedEvent);
+      }
+
+      await Promise.all([
+        this.outgoingPaymentRepository.store(outgoingPayment),
+        this.incomingPaymentRepository.store(incomingPayment),
+      ]);
+
+      await this.paymentEventPublisher.publish(events);
+
+      return outgoingPayment.id;
+    } else {
+      const walletAddressFundRequest: FundWalletAddressLiquidityRequest = {
+        id: crypto.randomUUID(),
+        type: LiquidityRequestType.FUND_WALLET_ADDRESS,
+        data: {
+          walletAddressId: request.senderWalletAddressId,
+          amount: quote.debitAmount,
+        },
+      };
+
+      await this.liquidityService.execute([walletAddressFundRequest]);
+
+      const outgoingPayment: OutgoingPayment = {
+        id: crypto.randomUUID(),
+        quoteId: quote.id,
+        senderWalletAddressId: walletAddress.id,
+        asset: {
+          code: walletAddress.assetCode,
+          scale: walletAddress.assetScale,
+        },
+        debitAmount: quote.debitAmount.value,
+        sentAmount: 0n,
+        incomingPaymentId: incomingPayment.id,
+        state: "FUNDED",
+        microPayments: [],
+      };
+      await this.outgoingPaymentRepository.store(outgoingPayment);
+
+      const outgoingPaymentPreparedEvent: OutgoingPaymentPreparedEvent = {
+        type: PaymentEventType.OUTGOING_PAYMENT_PREPARED,
+        data: {
+          outgoingPaymentId: outgoingPayment.id,
+          debitAmount: quote.debitAmount,
+          receiveAmount: quote.receiveAmount,
+          incomingPaymentId: outgoingPayment.incomingPaymentId,
+          quoteExpiresAt: quote.expiresAt,
+          ilpDetails: incomingPayment.ilpDetails,
+        },
+      };
+
+      await this.paymentEventPublisher.publish([outgoingPaymentPreparedEvent]);
+      return outgoingPayment.id;
+    }
+  }
+
+  public async createOutgoingPaymentFromIncomingPayment() {
+    throw new Error("not implemented");
+  }
+
+  private addMicroPaymentToIncomingPayment(
+    incomingPayment: IncomingPayment,
+    microPayment: MicroPayment
+  ) {
+    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
+      throw new IncomingPaymentCannotReceiveMicroPayment();
+    }
+
+    incomingPayment.microPayments.push(microPayment);
+    incomingPayment.receivedAmount += microPayment.amount; // received amount can be larger than incoming amount because of FX
+
+    if (
+      incomingPayment.incomingAmount &&
+      incomingPayment.receivedAmount >= incomingPayment.incomingAmount
+    ) {
+      incomingPayment.state = IncomingPaymentState.COMPLETED;
+    }
+  }
+
+  private addMicroPaymentToOutgoingPayment(
+    outgoingPayment: OutgoingPayment,
+    microPayment: MicroPayment
+  ) {
+    if (outgoingPayment.state !== OutgoingPaymentState.FUNDED) {
+      throw new OutgoingPaymentInvalidStateError();
+    }
+
+    outgoingPayment.microPayments.push(microPayment);
+    outgoingPayment.sentAmount += microPayment.amount;
+
+    // TODO: determine whether this can/should happen
+    if (outgoingPayment.sentAmount > outgoingPayment.debitAmount) {
+      throw new OutgoingPaymentInvalidStateError();
+    }
+
+    if (outgoingPayment.sentAmount === outgoingPayment.debitAmount) {
+      outgoingPayment.state = OutgoingPaymentState.COMPLETED;
+    }
+  }
+
+  public async handleIlpFulfillPacketReceivedEvent(
+    event: IlpFulfillPacketReceivedEvent
+  ) {
+    const outgoingPayment = await this.outgoingPaymentRepository.fetchById(
+      event.outgoingPaymentId
+    );
+
+    if (!outgoingPayment) {
+      throw new OutgoingPaymentNotFoundError();
+    }
+
+    if (outgoingPayment.state !== OutgoingPaymentState.FUNDED) {
+      throw new OutgoingPaymentInvalidStateError();
+    }
+
+    if (event.amount.assetCode === outgoingPayment.asset.code) {
+      // We lost precision
+      if (event.amount.assetScale > outgoingPayment.asset.scale) {
+        throw new OutgoingPaymentInvalidStateError();
+      }
+
+      const transfer: WalletAddressToPeerLiquidityRequest = {
+        id: event.packetId,
+        type: LiquidityRequestType.WALLET_ADDRESS_TO_PEER,
+        data: {
+          peerId: event.peerId,
+          walletAddressId: outgoingPayment.senderWalletAddressId,
+          amount: event.amount,
+        },
+      };
+
+      await this.liquidityService.execute([transfer]);
+
+      const scaledRate = BigInt(
+        10 ** (outgoingPayment.asset.scale - event.amount.assetScale)
+      );
+
+      const microPayment: MicroPayment = {
+        requestId: event.packetId,
+        ilpPeerId: event.peerId,
+        asset: outgoingPayment.asset,
+        amount: event.amount.value * scaledRate,
+        method: "ILP",
+      };
+
+      this.addMicroPaymentToOutgoingPayment(outgoingPayment, microPayment);
+
+      const events: PaymentEvent[] = [];
+      const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
+        type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
+        data: {
+          outgoingPayment,
+        },
+      };
+
+      if (event.didCompleteIncomingPayment) {
+        outgoingPayment.state = OutgoingPaymentState.COMPLETED;
+        events.push(outgoingPaymentCompletedEvent);
+      }
+
+      await this.outgoingPaymentRepository.store(outgoingPayment);
+      await this.paymentEventPublisher.publish(events);
+    } else {
+      throw new Error("not implemented");
+    }
+  }
+
+  public async handleIlpPreparePacketReceivedEvent(
+    event: IlpPreparePacketReceivedEvent
+  ) {
+    const peer = await this.peerService.getById(event.peerId);
+
+    if (!peer) {
+      throw new PeerNotFoundError();
+    }
+
+    const incomingPayment = await this.incomingPaymentRepository.fetchById(
+      event.incomingPaymentId
+    );
+
+    if (!incomingPayment) {
+      // Send a packet reject event
+      throw new IncomingPaymentNotFoundError();
+    }
+
+    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
+      // Send a packet reject event
+      throw new IncomingPaymentInvalidStateError();
+    }
+
+    if (peer.asset.code === incomingPayment.asset.code) {
+      if (peer.asset.scale > incomingPayment.asset.scale) {
+        throw new IncomingPaymentInvalidStateError();
+      }
+
+      const transfer: PeerToWalletAddressLiquidityRequest = {
+        id: event.packetId,
+        type: LiquidityRequestType.PEER_TO_WALLET_ADDRESS,
+        data: {
+          peerId: event.peerId,
+          walletAddressId: incomingPayment.walletAddressId,
+          amount: {
+            assetCode: peer.asset.code,
+            assetScale: peer.asset.scale,
+            value: event.amount,
+          },
+        },
+      };
+
+      await this.liquidityService.execute([transfer]);
+
+      const scaledRate = BigInt(
+        10 ** (incomingPayment.asset.scale - peer.asset.scale)
+      );
+
+      this.addMicroPaymentToIncomingPayment(incomingPayment, {
+        requestId: event.packetId,
+        ilpPeerId: event.peerId,
+        amount: event.amount * scaledRate,
+        method: "ILP",
+        asset: incomingPayment.asset,
+      });
+
+      await this.incomingPaymentRepository.store(incomingPayment);
+
+      const paymentEvents: PaymentEvent[] = [];
+
+      const incomingPaymentCompleted =
+        // @ts-ignore
+        incomingPayment.state === IncomingPaymentState.COMPLETED;
+
+      if (incomingPaymentCompleted) {
+        const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
+          type: PaymentEventType.INCOMING_PAYMENT_COMPLETED,
+          data: {
+            incomingPayment,
+          },
+        };
+
+        paymentEvents.push(incomingPaymentCompletedEvent);
+      }
+
+      const ilpPreparePacketAcceptedEvent: IlpPreparePacketAcceptedEvent = {
+        type: PaymentEventType.ILP_PREPARE_PACKET_ACCEPTED,
+        data: {
+          incomingPaymentCompleted,
+          preparePacketId: event.packetId,
+        },
+      };
+
+      paymentEvents.push(ilpPreparePacketAcceptedEvent);
+
+      await this.paymentEventPublisher.publish(paymentEvents);
+    } else {
+      throw new Error("not implemented");
+    }
   }
 }
