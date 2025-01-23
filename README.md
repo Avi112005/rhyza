@@ -1,3 +1,13 @@
+### Outstanding items
+
+- How to mark quotes as "used" after outgoing payment has been created for them?
+- How to store remote incoming payments (and have quotes reference them)? The ID is a URL. 
+- Can micropayments just store `amount` without `asset`? If we already have the asset on the incoming/outgoing payment.
+- In the wallet-to-wallet address liquidity request, is the liquidity service responsible for doing any FX?
+- Publish event also for local payments?
+
+### Peer to peer payment diagram
+
 ```mermaid
 ---
 config:
@@ -98,8 +108,6 @@ sequenceDiagram
     SPS->>SPS: Increment sent amount in outgoing payment<br>and persist
     SPS->>SPS: Check if outgoing payment is completed, publish event if so
     end
-
-
 
     end
     
