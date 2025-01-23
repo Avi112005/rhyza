@@ -9,9 +9,6 @@ interface EventPublisherAdapter {
 
 export class EventPublisher implements EventPublisherAdapter {
   public async publish(events: Event[]): Promise<void> {
-    for (const event of events) {
-      console.log(`Publishing ${event.type}`);
-      console.dir(event.data, { depth: null });
-    }
+    // not implemented
   }
 }
