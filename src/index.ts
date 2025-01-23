@@ -32,16 +32,15 @@ export const paymentService = new PaymentService(
 );
 
 (async () => {
-  const receiverWalletAddressId =
-    await walletAddressService.createWalletAddress({
-      id: "a1469618-077a-447d-b5a3-a9ed11265a64",
-      url: "",
-      assetCode: "USD",
-      assetScale: 2,
-    });
-
-  const senderWalletAddressId = await walletAddressService.createWalletAddress({
+  await walletAddressService.createWalletAddress({
     id: "a1469618-077a-447d-b5a3-a9ed11265a63",
+    url: "",
+    assetCode: "USD",
+    assetScale: 2,
+  });
+
+  await walletAddressService.createWalletAddress({
+    id: "a1469618-077a-447d-b5a3-a9ed11265a64",
     url: "",
     assetCode: "USD",
     assetScale: 2,
