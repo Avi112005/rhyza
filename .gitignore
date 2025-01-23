@@ -40,3 +40,4 @@ tmp
 .env
 !test/**/.env
 
+dist

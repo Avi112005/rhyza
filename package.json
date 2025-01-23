@@ -2,11 +2,10 @@
   "name": "rafiki-poc",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
-  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "build": "tsc"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +15,8 @@
     "fastify": "^5.2.1"
   },
   "devDependencies": {
-    "tsx": "^4.19.2"
+    "@types/node": "^22.10.9",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
   }
 }
