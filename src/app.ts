@@ -2,28 +2,18 @@ import fastify from "fastify";
 import { PaymentService } from "./payment";
 
 export function createApp(paymentService: PaymentService) {
-  const app = fastify({
-    logger: true,
-  });
+  const app = fastify();
 
   app.post("/incoming-payment", async function handler(request, reply) {
     const id = await paymentService.createIncomingPayment(request.body as any);
 
-    reply
-      .send({
-        id,
-      })
-      .status(201);
+    reply.code(201).send({ id });
   });
 
   app.post("/quote", async function handler(request, reply) {
     const id = await paymentService.createQuote(request.body as any);
 
-    reply
-      .send({
-        id,
-      })
-      .status(201);
+    reply.code(201).send({ id });
   });
 
   app.post("/outgoing-payment", async function handler(request, reply) {
@@ -31,11 +21,7 @@ export function createApp(paymentService: PaymentService) {
       request.body as any
     );
 
-    reply
-      .send({
-        id,
-      })
-      .status(201);
+    reply.code(201).send({ id });
   });
 
   return async () => {
