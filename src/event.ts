@@ -14,6 +14,7 @@ export class EventPublisher implements EventPublisherAdapter {
 
   public async publish(events: Event[]): Promise<void> {
     for (const event of events) {
+      // console.log(event.type, event.data);
       this.eventEmitter.emit(event.type, event);
     }
   }

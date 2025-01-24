@@ -1,5 +1,5 @@
 import fastify from "fastify";
-import { CreateQuoteRequest, PaymentService } from "./payment";
+import { PaymentService } from "./payment";
 
 export function createApp(paymentService: PaymentService) {
   const app = fastify();

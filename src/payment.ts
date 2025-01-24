@@ -31,7 +31,7 @@ class DuplicateOutgoingPaymentFoundError extends Error {}
 class OutgoingPaymentNotFoundError extends Error {}
 class OutgoingPaymentInvalidStateError extends Error {}
 
-export interface CreateIncomingPaymentRequest {
+interface CreateIncomingPaymentRequest {
   id?: string;
   walletAddressId: string; // we can consider using URIs here: might be easier for integrators to deal with + gives us flexibility particularly when it comes to paying into incoming payments on remote Rafikis
   expiresAt?: Date;
@@ -143,7 +143,7 @@ interface IlpPreparePacketAcceptedEvent extends Event {
   };
 }
 
-export type PaymentEvent =
+type PaymentEvent =
   | IncomingPaymentCreatedEvent
   | RemoteOutgoingPaymentFundedEvent
   | OutgoingPaymentCompletedEvent
@@ -171,12 +171,12 @@ interface IlpFulfillPacketReceivedEvent {
   didCompleteIncomingPayment: boolean;
 }
 
-export const IncomingPaymentState = {
+const IncomingPaymentState = {
   CREATED: "CREATED", // normal state, can add new micropayments
   EXPIRED: "EXPIRED", // available for reads only, cannot add new entries
   COMPLETED: "COMPLETED", // not available to reads or writes, historic only (can be changed back to inactive)
 } as const;
-export type IncomingPaymentState = keyof typeof IncomingPaymentState;
+type IncomingPaymentState = keyof typeof IncomingPaymentState;
 
 interface BaseIncomingPayment {
   id: string;
@@ -203,7 +203,7 @@ export interface RemoteIncomingPayment extends BaseIncomingPayment {
   ilpDetails: IlpDetails;
 }
 
-export interface CreateQuoteRequest {
+interface CreateQuoteRequest {
   id?: string;
   senderWalletAddressId: string;
   incomingPaymentId: string;
@@ -211,7 +211,7 @@ export interface CreateQuoteRequest {
   receiveAmount?: Amount;
 }
 
-export interface CreateOutgoingPaymentFromQuoteRequest {
+interface CreateOutgoingPaymentFromQuoteRequest {
   id?: string;
   quoteId: string;
   senderWalletAddressId: string;
@@ -835,7 +835,7 @@ export class PaymentService {
 
     this.addMicroPaymentToIncomingPayment(incomingPayment, {
       requestId: outgoingPayment.id,
-      amount: quote.receiveAmount.value,
+      amount: quote.receiveAmount.value, // TODO: need to send _up to_ to incomingAmount, as the quoted amount might be more
       method: "LOCAL",
     });
 
