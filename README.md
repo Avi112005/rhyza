@@ -1,6 +1,6 @@
 # Rafiki POC
 
-This repository contains a Proof of Concept (PoC) project that explores a redesigned payment flow for Rafiki. 
+This repository contains a Proof of Concept (PoC) project that explores a new payment flow for Rafiki.
 
 It is intended for experimental purposes only.
 
@@ -12,13 +12,20 @@ It is intended for experimental purposes only.
 
 - Event driven
   - Decoupling domains/services (e.g. payments domain and ILP connector interact through events)
-  - Workers use event/message queues (e.g. processing outgoing payments, webhook events on a message queue)
+  - Workers use message queues (e.g. processing outgoing payments, webhook events)
 - Accounting decoupling & improvements
-  - Getting payment state, such as the amount sent or received for a payment, doesn't (shouldn't) require trips to the accounting database. We now use a concept of "micro-payments" to store that information. Within the the ILP context, one packet = one micro-payment.
+  - Getting payment state, such as the amount sent or received for a payment, doesn't require trips to the accounting database. We now use a concept of "micro-payments" to store that information. Within the the ILP context, one packet = one micro-payment.
   - Avoiding creating "accounting" accounts for individual payments. For example, local payments (within the same Rafiki instance) result in transfers between wallet address accounts (instead of single-use payment liquidity accounts).
 
 
 ## Payments flow
+
+The scope of the PoC is a single payment flow:
+
+1. Creating an incoming payment
+2. Creating a quote
+3. Creating an outgoing payment
+4. Completing the outgoing payment (whether that's a local payment, or through ILP)
 
 ### High level
 
