@@ -4,6 +4,10 @@ This repository contains a Proof of Concept (PoC) project that explores a redesi
 
 It is intended for experimental purposes only.
 
+## Usage
+
+`pnpm dev`
+
 ## Main changes from current implementation
 
 - Event driven
@@ -13,11 +17,6 @@ It is intended for experimental purposes only.
   - Getting payment state, such as the amount sent or received for a payment, doesn't (shouldn't) require trips to the accounting database. We now use a concept of "micro-payments" to store that information. Within the the ILP context, one packet = one micro-payment.
   - Avoiding creating "accounting" accounts for individual payments. For example, local payments (within the same Rafiki instance) result in transfers between wallet address accounts (instead of single-use payment liquidity accounts).
 
-## Todo
-
-- [ ] Marking quotes as "used" after outgoing payment has been created for them
-- [ ] Strategy for storing remote incoming payments, and having quotes & outgoing payments reference them correctly (as compared to local incoming payments)
-- [ ] General structure of liquidity requests (having a standard to include amounts)
 
 ## Payments flow
 
@@ -135,5 +134,4 @@ sequenceDiagram
     end
 
     end
-    
 ```
