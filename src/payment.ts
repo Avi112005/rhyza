@@ -1,6 +1,5 @@
 import {
   FundWalletAddressLiquidityRequest,
-  LiquidityRequest,
   LiquidityRequestType,
   LiquidityServiceAdapter,
   PeerToWalletAddressLiquidityRequest,
@@ -28,10 +27,11 @@ class QuoteNotFoundError extends Error {}
 class PeerNotFoundError extends Error {}
 class QuoteExpiredError extends Error {}
 class IncomingPaymentCannotReceiveMicroPayment extends Error {}
+class DuplicateOutgoingPaymentFoundError extends Error {}
 class OutgoingPaymentNotFoundError extends Error {}
 class OutgoingPaymentInvalidStateError extends Error {}
 
-interface CreateIncomingPaymentRequest {
+export interface CreateIncomingPaymentRequest {
   id?: string;
   walletAddressId: string; // we can consider using URIs here: might be easier for integrators to deal with + gives us flexibility particularly when it comes to paying into incoming payments on remote Rafikis
   expiresAt?: Date;
@@ -63,7 +63,6 @@ interface MicroPayment {
   method: "LOCAL" | "ILP";
   ilpPeerId?: string;
   requestId: string;
-  asset: Asset;
   amount: bigint;
 }
 
@@ -89,7 +88,8 @@ export enum PaymentEventType {
   INCOMING_PAYMENT_CREATED = "INCOMING_PAYMENT_CREATED",
   INCOMING_PAYMENT_COMPLETED = "INCOMING_PAYMENT_COMPLETED",
   OUTGOING_PAYMENT_COMPLETED = "OUTGOING_PAYMENT_COMPLETED",
-  OUTGOING_PAYMENT_PREPARED = "OUTGOING_PAYMENT_PREPARED",
+  REMOTE_OUTGOING_PAYMENT_FUNDED = "REMOTE_OUTGOING_PAYMENT_FUNDED",
+  LOCAL_OUTGOING_PAYMENT_FUNDED = "LOCAL_OUTGOING_PAYMENT_FUNDED",
   ILP_PREPARE_PACKET_ACCEPTED = "ILP_PREPARE_PACKET_ACCEPTED",
 }
 
@@ -100,8 +100,8 @@ interface IncomingPaymentCreatedEvent extends Event {
   };
 }
 
-interface OutgoingPaymentPreparedEvent extends Event {
-  type: PaymentEventType.OUTGOING_PAYMENT_PREPARED;
+interface RemoteOutgoingPaymentFundedEvent extends Event {
+  type: PaymentEventType.REMOTE_OUTGOING_PAYMENT_FUNDED;
   data: {
     outgoingPaymentId: string;
     debitAmount: Amount;
@@ -126,6 +126,15 @@ interface OutgoingPaymentCompletedEvent extends Event {
   };
 }
 
+interface LocalOutgoingPaymentFundedEvent extends Event {
+  type: PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED;
+  data: {
+    quote: Quote;
+    outgoingPayment: OutgoingPayment;
+    incomingPayment: IncomingPayment;
+  };
+}
+
 interface IlpPreparePacketAcceptedEvent extends Event {
   type: PaymentEventType.ILP_PREPARE_PACKET_ACCEPTED;
   data: {
@@ -136,8 +145,9 @@ interface IlpPreparePacketAcceptedEvent extends Event {
 
 export type PaymentEvent =
   | IncomingPaymentCreatedEvent
-  | OutgoingPaymentPreparedEvent
+  | RemoteOutgoingPaymentFundedEvent
   | OutgoingPaymentCompletedEvent
+  | LocalOutgoingPaymentFundedEvent
   | IncomingPaymentCompletedEvent
   | IlpPreparePacketAcceptedEvent;
 
@@ -162,7 +172,7 @@ interface IlpFulfillPacketReceivedEvent {
 }
 
 export const IncomingPaymentState = {
-  CREATED: "CREATED", // normal state, can add new entries
+  CREATED: "CREATED", // normal state, can add new micropayments
   EXPIRED: "EXPIRED", // available for reads only, cannot add new entries
   COMPLETED: "COMPLETED", // not available to reads or writes, historic only (can be changed back to inactive)
 } as const;
@@ -193,7 +203,7 @@ export interface RemoteIncomingPayment extends BaseIncomingPayment {
   ilpDetails: IlpDetails;
 }
 
-interface CreateQuoteRequest {
+export interface CreateQuoteRequest {
   id?: string;
   senderWalletAddressId: string;
   incomingPaymentId: string;
@@ -201,7 +211,8 @@ interface CreateQuoteRequest {
   receiveAmount?: Amount;
 }
 
-interface CreateOutgoingPaymentFromQuoteRequest {
+export interface CreateOutgoingPaymentFromQuoteRequest {
+  id?: string;
   quoteId: string;
   senderWalletAddressId: string;
   // isFunded: boolean; TODO if the outgoing payment request came from a third party we need to webhook out to the ASE to "fund" the payment
@@ -601,6 +612,20 @@ export class PaymentService {
   public async createOutgoingPaymentFromQuote(
     request: CreateOutgoingPaymentFromQuoteRequest
   ) {
+    let outgoingPaymentId;
+
+    if (request.id) {
+      const existingOutgoingPayment =
+        await this.outgoingPaymentRepository.fetchById(request.id);
+
+      if (existingOutgoingPayment) {
+        throw new DuplicateOutgoingPaymentFoundError();
+      }
+      outgoingPaymentId = request.id;
+    } else {
+      outgoingPaymentId = crypto.randomUUID();
+    }
+
     const [walletAddress, quote] = await Promise.all([
       this.walletAddressService.getById(request.senderWalletAddressId),
       this.quoteRepository.fetchById(request.quoteId),
@@ -619,7 +644,6 @@ export class PaymentService {
     }
 
     // TODO: Check quote hasn't been used already
-
     if (quote.expiresAt <= new Date()) {
       throw new QuoteExpiredError();
     }
@@ -636,36 +660,17 @@ export class PaymentService {
       throw new IncomingPaymentInvalidStateError();
     }
 
-    // Like the remote one, this could also be an event
     if (incomingPayment.type === "LOCAL") {
-      const liquidityRequests: LiquidityRequest[] = [];
       const walletAddressFundRequest: FundWalletAddressLiquidityRequest = {
         id: crypto.randomUUID(),
         type: LiquidityRequestType.FUND_WALLET_ADDRESS,
         data: {
-          walletAddressId: request.senderWalletAddressId,
+          walletAddressId: quote.senderWalletAddressId,
           amount: quote.debitAmount,
         },
       };
 
-      liquidityRequests.push(walletAddressFundRequest);
-
-      const transferRequest: WalletToWalletAddressLiquidityRequest = {
-        id: crypto.randomUUID(),
-        type: LiquidityRequestType.WALLET_ADDRESS_TO_WALLET_ADDRESS,
-        data: {
-          sourceWalletAddressId: request.senderWalletAddressId,
-          sourceAmount: quote.debitAmount,
-          destinationWalletAddressId: incomingPayment.walletAddressId,
-          destinationAmount: quote.receiveAmount,
-        },
-      };
-
-      liquidityRequests.push(transferRequest);
-
-      await this.liquidityService.execute(liquidityRequests);
-
-      const outgoingPaymentId = crypto.randomUUID();
+      await this.liquidityService.execute([walletAddressFundRequest]);
 
       const outgoingPayment: OutgoingPayment = {
         id: outgoingPaymentId,
@@ -676,61 +681,26 @@ export class PaymentService {
           scale: walletAddress.assetScale,
         },
         debitAmount: quote.debitAmount.value,
-        sentAmount: quote.debitAmount.value,
+        sentAmount: 0n,
         incomingPaymentId: incomingPayment.id,
-        state: "COMPLETED",
-        microPayments: [
-          {
-            requestId: outgoingPaymentId,
-            amount: quote.debitAmount.value,
-            method: "LOCAL",
-            asset: {
-              scale: quote.debitAmount.assetScale,
-              code: quote.debitAmount.assetCode,
-            },
-          },
-        ],
+        state: OutgoingPaymentState.FUNDED, // TODO: check if the outgoing payment request came from third party, and webhook out to ASE instead of marking as FUNDED directly
+        microPayments: [],
       };
 
-      const events: PaymentEvent[] = [];
-
-      const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
-        type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
+      const localOutgoingPaymentFundedEvent: LocalOutgoingPaymentFundedEvent = {
+        type: PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED,
         data: {
           outgoingPayment,
+          incomingPayment,
+          quote,
         },
       };
 
-      events.push(outgoingPaymentCompletedEvent);
-
-      this.addMicroPaymentToIncomingPayment(incomingPayment, {
-        requestId: outgoingPaymentId,
-        amount: quote.receiveAmount.value,
-        method: "LOCAL",
-        asset: {
-          scale: quote.receiveAmount.assetScale,
-          code: quote.receiveAmount.assetCode,
-        },
-      });
-
-      // MicroPayment might have completed the incoming payment
-      // @ts-ignore
-      if (incomingPayment.state === IncomingPaymentState.COMPLETED) {
-        const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
-          type: PaymentEventType.INCOMING_PAYMENT_COMPLETED,
-          data: {
-            incomingPayment,
-          },
-        };
-        events.push(incomingPaymentCompletedEvent);
-      }
-
-      await Promise.all([
-        this.outgoingPaymentRepository.store(outgoingPayment),
-        this.incomingPaymentRepository.store(incomingPayment),
+      await this.paymentEventPublisher.publish([
+        localOutgoingPaymentFundedEvent,
       ]);
 
-      await this.paymentEventPublisher.publish(events);
+      await this.outgoingPaymentRepository.store(outgoingPayment);
 
       return outgoingPayment.id;
     } else {
@@ -761,19 +731,22 @@ export class PaymentService {
       };
       await this.outgoingPaymentRepository.store(outgoingPayment);
 
-      const outgoingPaymentPreparedEvent: OutgoingPaymentPreparedEvent = {
-        type: PaymentEventType.OUTGOING_PAYMENT_PREPARED,
-        data: {
-          outgoingPaymentId: outgoingPayment.id,
-          debitAmount: quote.debitAmount,
-          receiveAmount: quote.receiveAmount,
-          incomingPaymentId: outgoingPayment.incomingPaymentId,
-          quoteExpiresAt: quote.expiresAt,
-          ilpDetails: incomingPayment.ilpDetails,
-        },
-      };
+      const RemoteoutgoingPaymentFundedEvent: RemoteOutgoingPaymentFundedEvent =
+        {
+          type: PaymentEventType.REMOTE_OUTGOING_PAYMENT_FUNDED,
+          data: {
+            outgoingPaymentId: outgoingPayment.id,
+            debitAmount: quote.debitAmount,
+            receiveAmount: quote.receiveAmount,
+            incomingPaymentId: outgoingPayment.incomingPaymentId,
+            quoteExpiresAt: quote.expiresAt,
+            ilpDetails: incomingPayment.ilpDetails,
+          },
+        };
 
-      await this.paymentEventPublisher.publish([outgoingPaymentPreparedEvent]);
+      await this.paymentEventPublisher.publish([
+        RemoteoutgoingPaymentFundedEvent,
+      ]);
       return outgoingPayment.id;
     }
   }
@@ -822,6 +795,69 @@ export class PaymentService {
     }
   }
 
+  // We can decide whether we want to keep this event or not, or just complete the outgoing payment synchronously in the payment handler,
+  // in order to save one call to the liquidity service (we can fund the wallet address and make the wallet to wallet transfer directly in a single request)
+  public async handleLocalOutgoingPaymentFundedEvent(
+    event: LocalOutgoingPaymentFundedEvent
+  ) {
+    const { outgoingPayment, quote, incomingPayment } = event.data;
+
+    // TODO: FX handling, if receiving wallet asset is different then sending wallet
+    const transferRequest: WalletToWalletAddressLiquidityRequest = {
+      id: crypto.randomUUID(),
+      type: LiquidityRequestType.WALLET_ADDRESS_TO_WALLET_ADDRESS,
+      data: {
+        sourceWalletAddressId: quote.senderWalletAddressId,
+        sourceAmount: quote.debitAmount,
+        destinationWalletAddressId: incomingPayment.walletAddressId,
+        destinationAmount: quote.receiveAmount,
+      },
+    };
+
+    await this.liquidityService.execute([transferRequest]);
+
+    this.addMicroPaymentToOutgoingPayment(outgoingPayment, {
+      requestId: outgoingPayment.id,
+      amount: outgoingPayment.debitAmount,
+      method: "LOCAL",
+    });
+
+    const events: PaymentEvent[] = [];
+
+    const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
+      type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
+      data: {
+        outgoingPayment,
+      },
+    };
+
+    events.push(outgoingPaymentCompletedEvent);
+
+    this.addMicroPaymentToIncomingPayment(incomingPayment, {
+      requestId: outgoingPayment.id,
+      amount: quote.receiveAmount.value,
+      method: "LOCAL",
+    });
+
+    // MicroPayment might have completed the incoming payment
+    if (incomingPayment.state === IncomingPaymentState.COMPLETED) {
+      const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
+        type: PaymentEventType.INCOMING_PAYMENT_COMPLETED,
+        data: {
+          incomingPayment,
+        },
+      };
+      events.push(incomingPaymentCompletedEvent);
+    }
+
+    await Promise.all([
+      this.outgoingPaymentRepository.store(outgoingPayment),
+      this.incomingPaymentRepository.store(incomingPayment),
+    ]);
+
+    await this.paymentEventPublisher.publish(events);
+  }
+
   public async handleIlpFulfillPacketReceivedEvent(
     event: IlpFulfillPacketReceivedEvent
   ) {
@@ -862,7 +898,6 @@ export class PaymentService {
       const microPayment: MicroPayment = {
         requestId: event.packetId,
         ilpPeerId: event.peerId,
-        asset: outgoingPayment.asset,
         amount: event.amount.value * scaledRate,
         method: "ILP",
       };
@@ -885,7 +920,7 @@ export class PaymentService {
       await this.outgoingPaymentRepository.store(outgoingPayment);
       await this.paymentEventPublisher.publish(events);
     } else {
-      throw new Error("not implemented");
+      throw new Error("FX during packet handling not implemented");
     }
   }
 
@@ -903,12 +938,12 @@ export class PaymentService {
     );
 
     if (!incomingPayment) {
-      // Send a packet reject event
+      // TODO: Send a packet reject event
       throw new IncomingPaymentNotFoundError();
     }
 
     if (incomingPayment.state !== IncomingPaymentState.CREATED) {
-      // Send a packet reject event
+      // TODO: Send a packet reject event
       throw new IncomingPaymentInvalidStateError();
     }
 
@@ -942,7 +977,6 @@ export class PaymentService {
         ilpPeerId: event.peerId,
         amount: event.amount * scaledRate,
         method: "ILP",
-        asset: incomingPayment.asset,
       });
 
       await this.incomingPaymentRepository.store(incomingPayment);
@@ -976,7 +1010,7 @@ export class PaymentService {
 
       await this.paymentEventPublisher.publish(paymentEvents);
     } else {
-      throw new Error("not implemented");
+      throw new Error("FX during packet handling not implemented");
     }
   }
 }

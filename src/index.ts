@@ -4,6 +4,7 @@ import { LiquidityService } from "./liquidity";
 import {
   IncomingPayment,
   OutgoingPayment,
+  PaymentEventType,
   PaymentService,
   Quote,
   RemoteIncomingPayment,
@@ -13,12 +14,15 @@ import { RatesService } from "./rates";
 import { InMemoryRepository } from "./repository";
 import { WalletAddress, WalletAddressService } from "./wallet-address";
 
-export const walletAddressService = new WalletAddressService(
+const walletAddressService = new WalletAddressService(
   new InMemoryRepository<WalletAddress>()
 );
-export const peerService = new PeerService(new InMemoryRepository<Peer>());
-export const ratesService = new RatesService();
-export const liquidityService = new LiquidityService();
+
+const eventPublisher = new EventPublisher();
+
+const peerService = new PeerService(new InMemoryRepository<Peer>());
+const ratesService = new RatesService();
+const liquidityService = new LiquidityService();
 export const paymentService = new PaymentService(
   walletAddressService,
   peerService,
@@ -28,7 +32,12 @@ export const paymentService = new PaymentService(
   new InMemoryRepository<RemoteIncomingPayment>(),
   new InMemoryRepository<OutgoingPayment>(),
   new InMemoryRepository<Quote>(),
-  new EventPublisher()
+  eventPublisher
+);
+
+eventPublisher.registerConsumer(
+  PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED,
+  paymentService.handleLocalOutgoingPaymentFundedEvent.bind(paymentService)
 );
 
 (async () => {
