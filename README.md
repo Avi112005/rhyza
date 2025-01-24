@@ -1,12 +1,37 @@
-### Outstanding items
+# Rafiki POC
 
-- How to mark quotes as "used" after outgoing payment has been created for them?
-- How to store remote incoming payments (and have quotes reference them)? The ID is a URL. 
-- Can micropayments just store `amount` without `asset`? If we already have the asset on the incoming/outgoing payment.
-- In the wallet-to-wallet address liquidity request, is the liquidity service responsible for doing any FX?
-- Publish event also for local payments?
+This repository contains a Proof of Concept (PoC) project that explores a redesigned payment flow for Rafiki. 
 
-### Peer to peer payment diagram
+It is intended for experimental purposes only.
+
+## Main changes from current implementation
+
+- Event driven
+  - Decoupling domains/services (e.g. payments domain and ILP connector interact through events)
+  - Workers use event/message queues (e.g. processing outgoing payments, webhook events on a message queue)
+- Accounting decoupling & improvements
+  - Getting payment state, such as the amount sent or received for a payment, doesn't (shouldn't) require trips to the accounting database. We now use a concept of "micro-payments" to store that information. Within the the ILP context, one packet = one micro-payment.
+  - Avoiding creating "accounting" accounts for individual payments. For example, local payments (within the same Rafiki instance) result in transfers between wallet address accounts (instead of single-use payment liquidity accounts).
+
+## Todo
+
+- [ ] Marking quotes as "used" after outgoing payment has been created for them
+- [ ] Strategy for storing remote incoming payments, and having quotes & outgoing payments reference them correctly (as compared to local incoming payments)
+- [ ] General structure of liquidity requests (having a standard to include amounts)
+
+## Payments flow
+
+### High level
+
+#### Sending prepare packets
+
+![Sending Rafiki](./img/sending.png)
+
+##### Receiving prepare packets
+
+![Receiving Rafiki](./img/receiving.png)
+
+### Sequence diagram
 
 ```mermaid
 ---
@@ -89,7 +114,7 @@ sequenceDiagram
 
     rect rgba(0, 0, 0, .05)
     note right of SASE: Outgoing payment worker<br>(outgoing payment prepared event)
-    SPS->>SILP: Start payment
+    SPS-->>SILP: Outgoing payment prepared event
     loop
     SILP->>RILP: Send prepare packet
     RILP->>SILP: Prepare packet accepted
