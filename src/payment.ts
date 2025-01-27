@@ -6,12 +6,17 @@ import {
   WalletAddressToPeerLiquidityRequest,
   WalletToWalletAddressLiquidityRequest,
 } from "./liquidity";
-import { PeerServiceAdapter } from "./peer";
+import { IlpPeerServiceAdapter } from "./ilp-peer";
 import { RatesServiceAdapter } from "./rates";
 import { Repository } from "./repository";
 import { Amount, Asset } from "./shared";
 import { WalletAddress, WalletAddressServiceAdapter } from "./wallet-address";
 import { Event } from "./event";
+import { IlpDetails } from "./ilp-connector";
+import {
+  RemoteIncomingPayment,
+  RemoteIncomingPaymentServiceAdapter,
+} from "./remote-incoming-payment";
 
 export class WalletAddressNotFoundError extends Error {}
 export class WalletAddressInactiveError extends Error {}
@@ -73,14 +78,14 @@ export interface OutgoingPayment {
   state: OutgoingPaymentState;
   sentAmount: bigint;
   debitAmount: bigint;
-  incomingPaymentId: string;
+  localIncomingPaymentId?: string;
+  remoteIncomingPaymentUrl?: string;
   senderWalletAddressId: string;
   microPayments: MicroPayment[];
 }
 
 interface IncomingPaymentRepository extends Repository<IncomingPayment> {}
-interface RemoteIncomingPaymentRepository
-  extends Repository<RemoteIncomingPayment> {}
+
 interface QuoteRepository extends Repository<Quote> {}
 interface OutgoingPaymentRepository extends Repository<OutgoingPayment> {}
 
@@ -90,7 +95,11 @@ export enum PaymentEventType {
   OUTGOING_PAYMENT_COMPLETED = "OUTGOING_PAYMENT_COMPLETED",
   REMOTE_OUTGOING_PAYMENT_FUNDED = "REMOTE_OUTGOING_PAYMENT_FUNDED",
   LOCAL_OUTGOING_PAYMENT_FUNDED = "LOCAL_OUTGOING_PAYMENT_FUNDED",
-  ILP_PREPARE_PACKET_ACCEPTED = "ILP_PREPARE_PACKET_ACCEPTED",
+  REMOTE_QUOTE_REQUESTED = "REMOTE_QUOTE_REQUESTED",
+  ILP_PAYMENT_PREPARE_PACKET_ACCEPTED = "ILP_PAYMENT_PREPARE_PACKET_ACCEPTED",
+  ILP_QUOTE_PREPARE_PACKET_RECEIVED = "ILP_QUOTE_PREPARE_PACKET_RECEIVED",
+  ILP_PAYMENT_FULFILL_PACKET_RECEIVED = "ILP_PAYMENT_FULFILL_PACKET_RECEIVED",
+  ILP_PAYMENT_PREPARE_PACKET_RECEIVED = "ILP_PAYMENT_PREPARE_PACKET_RECEIVED",
 }
 
 interface IncomingPaymentCreatedEvent extends Event {
@@ -100,14 +109,14 @@ interface IncomingPaymentCreatedEvent extends Event {
   };
 }
 
-interface RemoteOutgoingPaymentFundedEvent extends Event {
+export interface RemoteOutgoingPaymentFundedEvent extends Event {
   type: PaymentEventType.REMOTE_OUTGOING_PAYMENT_FUNDED;
   data: {
     outgoingPaymentId: string;
     debitAmount: Amount;
     receiveAmount: Amount;
     quoteExpiresAt: Date;
-    incomingPaymentId: string;
+    remoteIncomingPaymentUrl: string;
     ilpDetails: IlpDetails;
   };
 }
@@ -135,10 +144,24 @@ interface LocalOutgoingPaymentFundedEvent extends Event {
   };
 }
 
-interface IlpPreparePacketAcceptedEvent extends Event {
-  type: PaymentEventType.ILP_PREPARE_PACKET_ACCEPTED;
+export interface RemoteQuoteRequestedEvent extends Event {
+  type: PaymentEventType.REMOTE_QUOTE_REQUESTED;
   data: {
-    preparePacketId: string;
+    quote: {
+      id: string;
+      debitAmount: Amount;
+      expiresAt?: Date;
+      senderWalletAddressId: string;
+    };
+    incomingPayment: RemoteIncomingPayment;
+  };
+}
+
+export interface IlpPaymentPreparePacketAcceptedEvent extends Event {
+  type: PaymentEventType.ILP_PAYMENT_PREPARE_PACKET_ACCEPTED;
+  data: {
+    amount: Amount;
+    requestId: string;
     incomingPaymentCompleted: boolean;
   };
 }
@@ -149,58 +172,66 @@ type PaymentEvent =
   | OutgoingPaymentCompletedEvent
   | LocalOutgoingPaymentFundedEvent
   | IncomingPaymentCompletedEvent
-  | IlpPreparePacketAcceptedEvent;
+  | IlpPaymentPreparePacketAcceptedEvent
+  | IlpPaymentPreparePacketReceivedEvent
+  | IlpPaymentFulfillPacketReceivedEvent
+  | RemoteQuoteRequestedEvent;
 
 interface PaymentEventPublisher {
   publish(events: PaymentEvent[]): Promise<void>;
 }
 
-interface IlpPreparePacketReceivedEvent {
-  packetId: string;
-  incomingPaymentId: string;
-  peerId: string;
-  amount: bigint;
+export interface IlpPaymentPreparePacketReceivedEvent extends Event {
+  type: PaymentEventType.ILP_PAYMENT_PREPARE_PACKET_RECEIVED;
+  data: {
+    requestId: string;
+    incomingPaymentId: string;
+    peerId: string;
+    amount: bigint;
+  };
 }
 
-interface IlpFulfillPacketReceivedEvent {
-  packetId: string;
-  peerId: string;
-  amount: Amount;
-  outgoingPaymentId: string;
-  incomingPaymentId: string;
-  didCompleteIncomingPayment: boolean;
+export interface IlpPaymentFulfillPacketReceivedEvent extends Event {
+  type: PaymentEventType.ILP_PAYMENT_FULFILL_PACKET_RECEIVED;
+  data: {
+    requestId: string;
+    peerId: string;
+    amount: Amount;
+    outgoingPaymentId: string;
+    didCompleteIncomingPayment: boolean;
+  };
 }
 
-const IncomingPaymentState = {
+export interface IlpQuotePacketReceivedEvent extends Event {
+  type: PaymentEventType.ILP_QUOTE_PREPARE_PACKET_RECEIVED;
+  data: {
+    requestId: string;
+    peerId: string;
+    amount: bigint;
+    quoteId: string;
+  };
+}
+
+const LocalIncomingPaymentState = {
   CREATED: "CREATED", // normal state, can add new micropayments
   EXPIRED: "EXPIRED", // available for reads only, cannot add new entries
   COMPLETED: "COMPLETED", // not available to reads or writes, historic only (can be changed back to inactive)
 } as const;
-type IncomingPaymentState = keyof typeof IncomingPaymentState;
+type LocalIncomingPaymentState = keyof typeof LocalIncomingPaymentState;
 
 interface BaseIncomingPayment {
-  id: string;
-  walletAddressId: string;
   expiresAt: Date;
   asset: Asset;
   incomingAmount?: bigint;
   receivedAmount: bigint;
-  state: IncomingPaymentState;
-  microPayments: MicroPayment[];
 }
 
 export interface IncomingPayment extends BaseIncomingPayment {
+  id: string;
+  state: LocalIncomingPaymentState;
+  walletAddressId: string;
   type: "LOCAL";
-}
-
-interface IlpDetails {
-  sharedSecret: string;
-  destinationAddress: string;
-}
-
-export interface RemoteIncomingPayment extends BaseIncomingPayment {
-  type: "REMOTE";
-  ilpDetails: IlpDetails;
+  microPayments: MicroPayment[];
 }
 
 interface CreateQuoteRequest {
@@ -225,11 +256,11 @@ export class PaymentService {
 
   constructor(
     private walletAddressService: WalletAddressServiceAdapter,
-    private peerService: PeerServiceAdapter,
+    private ilpPeerService: IlpPeerServiceAdapter,
     private ratesService: RatesServiceAdapter,
     private liquidityService: LiquidityServiceAdapter,
+    private remoteIncomingPaymentService: RemoteIncomingPaymentServiceAdapter,
     private incomingPaymentRepository: IncomingPaymentRepository,
-    private remoteIncomingPaymentRepository: RemoteIncomingPaymentRepository,
     private outgoingPaymentRepository: OutgoingPaymentRepository,
     private quoteRepository: QuoteRepository,
     private paymentEventPublisher: PaymentEventPublisher
@@ -292,7 +323,7 @@ export class PaymentService {
       expiresAt,
       walletAddressId: request.walletAddressId,
       type: "LOCAL",
-      state: IncomingPaymentState.CREATED,
+      state: LocalIncomingPaymentState.CREATED,
       microPayments: [],
       asset: {
         code: walletAddress.assetCode,
@@ -318,7 +349,7 @@ export class PaymentService {
   ): Promise<IncomingPayment | RemoteIncomingPayment | undefined> {
     return (
       (await this.incomingPaymentRepository.fetchById(incomingPaymentId)) ||
-      (await this.remoteIncomingPaymentRepository.fetchById(incomingPaymentId))
+      (await this.remoteIncomingPaymentService.getById(incomingPaymentId))
     );
   }
 
@@ -338,7 +369,7 @@ export class PaymentService {
 
     const [walletAddress, incomingPayment] = await Promise.all([
       this.walletAddressService.getById(request.senderWalletAddressId),
-      this.incomingPaymentRepository.fetchById(request.incomingPaymentId),
+      this.fetchIncomingPayment(request.incomingPaymentId),
     ]);
 
     if (!walletAddress) {
@@ -353,7 +384,18 @@ export class PaymentService {
       throw new IncomingPaymentNotFoundError();
     }
 
-    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
+    return incomingPayment.type === "LOCAL"
+      ? this.createLocalQuote(request, id, incomingPayment, walletAddress)
+      : this.createRemoteQuote(request, id, incomingPayment, walletAddress);
+  }
+
+  public async createLocalQuote(
+    request: CreateQuoteRequest,
+    id: string,
+    incomingPayment: IncomingPayment,
+    walletAddress: WalletAddress
+  ): Promise<string> {
+    if (incomingPayment.state !== LocalIncomingPaymentState.CREATED) {
       throw new IncomingPaymentInvalidStateError();
     }
 
@@ -419,6 +461,46 @@ export class PaymentService {
     };
 
     await this.quoteRepository.store(newQuote);
+
+    return id;
+  }
+
+  public async createRemoteQuote(
+    request: CreateQuoteRequest,
+    id: string,
+    incomingPayment: RemoteIncomingPayment,
+    walletAddress: WalletAddress
+  ): Promise<string> {
+    // TODO: Do we need to check remote incoming payment here?
+
+    const quoteDefaultExpiryMs = new Date().getTime() + this.QUOTE_EXPIRY_MS;
+
+    // TODO: handle debit & receive amount
+    const newQuote: Quote = {
+      id,
+      receiveAmount: request.debitAmount!,
+      debitAmount: request.debitAmount!,
+      senderWalletAddressId: walletAddress.id,
+      incomingPaymentId: incomingPayment.id,
+      exchangeRate: 1,
+      expiresAt: new Date(quoteDefaultExpiryMs),
+    };
+
+    await this.quoteRepository.store(newQuote);
+
+    const event: RemoteQuoteRequestedEvent = {
+      type: PaymentEventType.REMOTE_QUOTE_REQUESTED,
+      data: {
+        quote: {
+          id,
+          debitAmount: request.debitAmount!,
+          senderWalletAddressId: walletAddress.id,
+        },
+        incomingPayment,
+      },
+    };
+
+    await this.paymentEventPublisher.publish([event]);
 
     return id;
   }
@@ -656,11 +738,11 @@ export class PaymentService {
       throw new IncomingPaymentNotFoundError();
     }
 
-    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
-      throw new IncomingPaymentInvalidStateError();
-    }
-
     if (incomingPayment.type === "LOCAL") {
+      if (incomingPayment.state !== LocalIncomingPaymentState.CREATED) {
+        throw new IncomingPaymentInvalidStateError();
+      }
+
       const walletAddressFundRequest: FundWalletAddressLiquidityRequest = {
         id: crypto.randomUUID(),
         type: LiquidityRequestType.FUND_WALLET_ADDRESS,
@@ -682,7 +764,7 @@ export class PaymentService {
         },
         debitAmount: quote.debitAmount.value,
         sentAmount: 0n,
-        incomingPaymentId: incomingPayment.id,
+        localIncomingPaymentId: incomingPayment.id,
         state: OutgoingPaymentState.FUNDED, // TODO: check if the outgoing payment request came from third party, and webhook out to ASE instead of marking as FUNDED directly
         microPayments: [],
       };
@@ -725,27 +807,27 @@ export class PaymentService {
         },
         debitAmount: quote.debitAmount.value,
         sentAmount: 0n,
-        incomingPaymentId: incomingPayment.id,
+        remoteIncomingPaymentUrl: incomingPayment.id,
         state: "FUNDED",
         microPayments: [],
       };
       await this.outgoingPaymentRepository.store(outgoingPayment);
 
-      const RemoteoutgoingPaymentFundedEvent: RemoteOutgoingPaymentFundedEvent =
+      const remoteOutgoingPaymentFundedEvent: RemoteOutgoingPaymentFundedEvent =
         {
           type: PaymentEventType.REMOTE_OUTGOING_PAYMENT_FUNDED,
           data: {
             outgoingPaymentId: outgoingPayment.id,
             debitAmount: quote.debitAmount,
             receiveAmount: quote.receiveAmount,
-            incomingPaymentId: outgoingPayment.incomingPaymentId,
+            remoteIncomingPaymentUrl: outgoingPayment.remoteIncomingPaymentUrl!,
             quoteExpiresAt: quote.expiresAt,
             ilpDetails: incomingPayment.ilpDetails,
           },
         };
 
       await this.paymentEventPublisher.publish([
-        RemoteoutgoingPaymentFundedEvent,
+        remoteOutgoingPaymentFundedEvent,
       ]);
       return outgoingPayment.id;
     }
@@ -759,7 +841,7 @@ export class PaymentService {
     incomingPayment: IncomingPayment,
     microPayment: MicroPayment
   ) {
-    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
+    if (incomingPayment.state !== LocalIncomingPaymentState.CREATED) {
       throw new IncomingPaymentCannotReceiveMicroPayment();
     }
 
@@ -770,7 +852,7 @@ export class PaymentService {
       incomingPayment.incomingAmount &&
       incomingPayment.receivedAmount >= incomingPayment.incomingAmount
     ) {
-      incomingPayment.state = IncomingPaymentState.COMPLETED;
+      incomingPayment.state = LocalIncomingPaymentState.COMPLETED;
     }
   }
 
@@ -840,7 +922,7 @@ export class PaymentService {
     });
 
     // MicroPayment might have completed the incoming payment
-    if (incomingPayment.state === IncomingPaymentState.COMPLETED) {
+    if (incomingPayment.state === LocalIncomingPaymentState.COMPLETED) {
       const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
         type: PaymentEventType.INCOMING_PAYMENT_COMPLETED,
         data: {
@@ -858,11 +940,11 @@ export class PaymentService {
     await this.paymentEventPublisher.publish(events);
   }
 
-  public async handleIlpFulfillPacketReceivedEvent(
-    event: IlpFulfillPacketReceivedEvent
+  public async handleIlpPaymentFulfillPacketReceivedEvent(
+    event: IlpPaymentFulfillPacketReceivedEvent
   ) {
     const outgoingPayment = await this.outgoingPaymentRepository.fetchById(
-      event.outgoingPaymentId
+      event.data.outgoingPaymentId
     );
 
     if (!outgoingPayment) {
@@ -873,47 +955,55 @@ export class PaymentService {
       throw new OutgoingPaymentInvalidStateError();
     }
 
-    if (event.amount.assetCode === outgoingPayment.asset.code) {
+    if (event.data.amount.assetCode === outgoingPayment.asset.code) {
       // We lost precision
-      if (event.amount.assetScale > outgoingPayment.asset.scale) {
+      if (event.data.amount.assetScale > outgoingPayment.asset.scale) {
         throw new OutgoingPaymentInvalidStateError();
       }
 
       const transfer: WalletAddressToPeerLiquidityRequest = {
-        id: event.packetId,
+        id: event.data.requestId,
         type: LiquidityRequestType.WALLET_ADDRESS_TO_PEER,
         data: {
-          peerId: event.peerId,
+          peerId: event.data.peerId,
           walletAddressId: outgoingPayment.senderWalletAddressId,
-          amount: event.amount,
+          amount: event.data.amount,
         },
       };
 
       await this.liquidityService.execute([transfer]);
 
       const scaledRate = BigInt(
-        10 ** (outgoingPayment.asset.scale - event.amount.assetScale)
+        10 ** (outgoingPayment.asset.scale - event.data.amount.assetScale)
       );
 
       const microPayment: MicroPayment = {
-        requestId: event.packetId,
-        ilpPeerId: event.peerId,
-        amount: event.amount.value * scaledRate,
+        requestId: event.data.requestId,
+        ilpPeerId: event.data.peerId,
+        amount: event.data.amount.value * scaledRate,
         method: "ILP",
       };
 
       this.addMicroPaymentToOutgoingPayment(outgoingPayment, microPayment);
 
       const events: PaymentEvent[] = [];
-      const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
-        type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
-        data: {
-          outgoingPayment,
-        },
-      };
 
-      if (event.didCompleteIncomingPayment) {
+      // TODO: do we need to know whether the incoming payment was completed? Or we just need to know that the connection was done/closed?
+      // or do we just check the status of the micro
+
+      if (
+        // @ts-ignore
+        outgoingPayment.state === OutgoingPaymentState.COMPLETED || // Micropayment could have completed payment
+        event.data.didCompleteIncomingPayment
+      ) {
         outgoingPayment.state = OutgoingPaymentState.COMPLETED;
+
+        const outgoingPaymentCompletedEvent: OutgoingPaymentCompletedEvent = {
+          type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED,
+          data: {
+            outgoingPayment,
+          },
+        };
         events.push(outgoingPaymentCompletedEvent);
       }
 
@@ -924,17 +1014,17 @@ export class PaymentService {
     }
   }
 
-  public async handleIlpPreparePacketReceivedEvent(
-    event: IlpPreparePacketReceivedEvent
+  public async handleIlpPaymentPreparePacketReceivedEvent(
+    event: IlpPaymentPreparePacketReceivedEvent
   ) {
-    const peer = await this.peerService.getById(event.peerId);
+    const peer = await this.ilpPeerService.getById(event.data.peerId);
 
     if (!peer) {
       throw new PeerNotFoundError();
     }
 
     const incomingPayment = await this.incomingPaymentRepository.fetchById(
-      event.incomingPaymentId
+      event.data.incomingPaymentId
     );
 
     if (!incomingPayment) {
@@ -942,7 +1032,7 @@ export class PaymentService {
       throw new IncomingPaymentNotFoundError();
     }
 
-    if (incomingPayment.state !== IncomingPaymentState.CREATED) {
+    if (incomingPayment.state !== LocalIncomingPaymentState.CREATED) {
       // TODO: Send a packet reject event
       throw new IncomingPaymentInvalidStateError();
     }
@@ -953,15 +1043,15 @@ export class PaymentService {
       }
 
       const transfer: PeerToWalletAddressLiquidityRequest = {
-        id: event.packetId,
+        id: event.data.requestId,
         type: LiquidityRequestType.PEER_TO_WALLET_ADDRESS,
         data: {
-          peerId: event.peerId,
+          peerId: event.data.peerId,
           walletAddressId: incomingPayment.walletAddressId,
           amount: {
             assetCode: peer.asset.code,
             assetScale: peer.asset.scale,
-            value: event.amount,
+            value: event.data.amount,
           },
         },
       };
@@ -972,10 +1062,12 @@ export class PaymentService {
         10 ** (incomingPayment.asset.scale - peer.asset.scale)
       );
 
+      const microPaymentAmount = event.data.amount * scaledRate;
+
       this.addMicroPaymentToIncomingPayment(incomingPayment, {
-        requestId: event.packetId,
-        ilpPeerId: event.peerId,
-        amount: event.amount * scaledRate,
+        requestId: event.data.requestId,
+        ilpPeerId: event.data.peerId,
+        amount: microPaymentAmount,
         method: "ILP",
       });
 
@@ -985,7 +1077,7 @@ export class PaymentService {
 
       const incomingPaymentCompleted =
         // @ts-ignore
-        incomingPayment.state === IncomingPaymentState.COMPLETED;
+        incomingPayment.state === LocalIncomingPaymentState.COMPLETED;
 
       if (incomingPaymentCompleted) {
         const incomingPaymentCompletedEvent: IncomingPaymentCompletedEvent = {
@@ -998,19 +1090,40 @@ export class PaymentService {
         paymentEvents.push(incomingPaymentCompletedEvent);
       }
 
-      const ilpPreparePacketAcceptedEvent: IlpPreparePacketAcceptedEvent = {
-        type: PaymentEventType.ILP_PREPARE_PACKET_ACCEPTED,
-        data: {
-          incomingPaymentCompleted,
-          preparePacketId: event.packetId,
-        },
-      };
+      const ilpPaymentPreparePacketAcceptedEvent: IlpPaymentPreparePacketAcceptedEvent =
+        {
+          type: PaymentEventType.ILP_PAYMENT_PREPARE_PACKET_ACCEPTED,
+          data: {
+            amount: {
+              assetCode: incomingPayment.asset.code,
+              assetScale: incomingPayment.asset.scale,
+              value: microPaymentAmount,
+            },
+            incomingPaymentCompleted,
+            requestId: event.data.requestId,
+          },
+        };
 
-      paymentEvents.push(ilpPreparePacketAcceptedEvent);
+      paymentEvents.push(ilpPaymentPreparePacketAcceptedEvent);
 
       await this.paymentEventPublisher.publish(paymentEvents);
     } else {
       throw new Error("FX during packet handling not implemented");
     }
+  }
+
+  public async handleIlpQuotePacketReceived(
+    event: IlpQuotePacketReceivedEvent
+  ): Promise<void> {
+    const quote = await this.quoteRepository.fetchById(event.data.quoteId);
+
+    if (!quote) {
+      throw new QuoteNotFoundError();
+    }
+
+    quote.debitAmount.value = event.data.amount;
+    quote.receiveAmount.value = event.data.amount;
+
+    await this.quoteRepository.store(quote);
   }
 }
