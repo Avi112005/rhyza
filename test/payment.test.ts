@@ -27,8 +27,6 @@ import {
 
 describe("Payment Service", () => {
   const incomingPaymentRepo = new InMemoryRepository<IncomingPayment>();
-  const remoteIncomingPaymentRepo =
-    new InMemoryRepository<RemoteIncomingPayment>();
   const outgoingPaymentRepo = new InMemoryRepository<OutgoingPayment>();
   const quoteRepo = new InMemoryRepository<Quote>();
   const walletAddressRepo = new InMemoryRepository<WalletAddress>();
