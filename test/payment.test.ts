@@ -11,16 +11,19 @@ import {
   PaymentEventType,
   PaymentService,
   Quote,
-  RemoteIncomingPayment,
   WalletAddressInactiveError,
   WalletAddressNotFoundError,
 } from "../src/payment";
 import { WalletAddress, WalletAddressService } from "../src/wallet-address";
 import { InMemoryRepository } from "../src/repository";
 import { EventPublisher } from "../src/event";
-import { Peer, PeerService } from "../src/peer";
+import { IlpPeerService, InMemoryIlpPeerRepository } from "../src/ilp-peer";
 import { RatesService } from "../src/rates";
 import { LiquidityService } from "../src/liquidity";
+import {
+  RemoteIncomingPayment,
+  RemoteIncomingPaymentService,
+} from "../src/remote-incoming-payment";
 
 describe("Payment Service", () => {
   const incomingPaymentRepo = new InMemoryRepository<IncomingPayment>();
@@ -31,18 +34,21 @@ describe("Payment Service", () => {
   const walletAddressRepo = new InMemoryRepository<WalletAddress>();
   const walletAddressService = new WalletAddressService(walletAddressRepo);
   const eventPublisher = new EventPublisher();
-  const peerRepo = new InMemoryRepository<Peer>();
-  const peerService = new PeerService(peerRepo);
+  const ilpPeerService = new IlpPeerService(new InMemoryIlpPeerRepository());
   const ratesService = new RatesService();
   const liquidityService = new LiquidityService();
 
+  const remoteIncomingPaymentService = new RemoteIncomingPaymentService(
+    new InMemoryRepository<RemoteIncomingPayment>()
+  );
+
   const paymentService = new PaymentService(
     walletAddressService,
-    peerService,
+    ilpPeerService,
     ratesService,
     liquidityService,
+    remoteIncomingPaymentService,
     incomingPaymentRepo,
-    remoteIncomingPaymentRepo,
     outgoingPaymentRepo,
     quoteRepo,
     eventPublisher
