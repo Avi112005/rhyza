@@ -13,23 +13,23 @@ import { Amount, Asset } from "./shared";
 import { WalletAddress, WalletAddressServiceAdapter } from "./wallet-address";
 import { Event } from "./event";
 
-class WalletAddressNotFoundError extends Error {}
-class WalletAddressInactiveError extends Error {}
-class IncomingPaymentWalletAddressAssetMismatchError extends Error {}
-class IncomingPaymentNotFoundError extends Error {}
-class IncomingPaymentInvalidStateError extends Error {}
-class InvalidIncomingPaymentExpiryError extends Error {}
-class DuplicateIncomingPaymentFoundError extends Error {}
-class InvalidQuoteAmountError extends Error {}
-class CouldNotConvertExchangeRatesError extends Error {}
-class DuplicateQuoteFoundError extends Error {}
-class QuoteNotFoundError extends Error {}
-class PeerNotFoundError extends Error {}
-class QuoteExpiredError extends Error {}
-class IncomingPaymentCannotReceiveMicroPayment extends Error {}
-class DuplicateOutgoingPaymentFoundError extends Error {}
-class OutgoingPaymentNotFoundError extends Error {}
-class OutgoingPaymentInvalidStateError extends Error {}
+export class WalletAddressNotFoundError extends Error {}
+export class WalletAddressInactiveError extends Error {}
+export class IncomingPaymentWalletAddressAssetMismatchError extends Error {}
+export class IncomingPaymentNotFoundError extends Error {}
+export class IncomingPaymentInvalidStateError extends Error {}
+export class InvalidIncomingPaymentExpiryError extends Error {}
+export class DuplicateIncomingPaymentFoundError extends Error {}
+export class InvalidQuoteAmountError extends Error {}
+export class CouldNotConvertExchangeRatesError extends Error {}
+export class DuplicateQuoteFoundError extends Error {}
+export class QuoteNotFoundError extends Error {}
+export class PeerNotFoundError extends Error {}
+export class QuoteExpiredError extends Error {}
+export class IncomingPaymentCannotReceiveMicroPayment extends Error {}
+export class DuplicateOutgoingPaymentFoundError extends Error {}
+export class OutgoingPaymentNotFoundError extends Error {}
+export class OutgoingPaymentInvalidStateError extends Error {}
 
 interface CreateIncomingPaymentRequest {
   id?: string;

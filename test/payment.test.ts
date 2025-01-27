@@ -1,0 +1,364 @@
+import test, { describe } from "node:test";
+import assert from "node:assert";
+import { randomUUID } from "node:crypto";
+
+import {
+  DuplicateIncomingPaymentFoundError,
+  IncomingPayment,
+  IncomingPaymentWalletAddressAssetMismatchError,
+  InvalidIncomingPaymentExpiryError,
+  OutgoingPayment,
+  PaymentEventType,
+  PaymentService,
+  Quote,
+  RemoteIncomingPayment,
+  WalletAddressInactiveError,
+  WalletAddressNotFoundError,
+} from "../src/payment";
+import { WalletAddress, WalletAddressService } from "../src/wallet-address";
+import { InMemoryRepository } from "../src/repository";
+import { EventPublisher } from "../src/event";
+import { Peer, PeerService } from "../src/peer";
+import { RatesService } from "../src/rates";
+import { LiquidityService } from "../src/liquidity";
+
+describe("Payment Service", () => {
+  const incomingPaymentRepo = new InMemoryRepository<IncomingPayment>();
+  const remoteIncomingPaymentRepo =
+    new InMemoryRepository<RemoteIncomingPayment>();
+  const outgoingPaymentRepo = new InMemoryRepository<OutgoingPayment>();
+  const quoteRepo = new InMemoryRepository<Quote>();
+  const walletAddressRepo = new InMemoryRepository<WalletAddress>();
+  const walletAddressService = new WalletAddressService(walletAddressRepo);
+  const eventPublisher = new EventPublisher();
+  const peerRepo = new InMemoryRepository<Peer>();
+  const peerService = new PeerService(peerRepo);
+  const ratesService = new RatesService();
+  const liquidityService = new LiquidityService();
+
+  const paymentService = new PaymentService(
+    walletAddressService,
+    peerService,
+    ratesService,
+    liquidityService,
+    incomingPaymentRepo,
+    remoteIncomingPaymentRepo,
+    outgoingPaymentRepo,
+    quoteRepo,
+    eventPublisher
+  );
+
+  describe("createIncomingPayment", async (t) => {
+    describe("throws", async (t) => {
+      test("if provided id is not unique", async (t) => {
+        const id = randomUUID();
+        const request = {
+          id,
+          walletAddressId: randomUUID(),
+        };
+
+        t.mock.method(incomingPaymentRepo, "fetchById", async () => {
+          return id;
+        });
+
+        await assert.rejects(
+          async () => {
+            await paymentService.createIncomingPayment(request);
+          },
+          DuplicateIncomingPaymentFoundError,
+          "Does not throw DuplicateIncomingPaymentFoundError"
+        );
+      });
+
+      test("if wallet address is not found", async (t) => {
+        const request = {
+          id: randomUUID(),
+          walletAddressId: randomUUID(),
+        };
+
+        t.mock.method(walletAddressService, "getById", async () => {
+          return undefined;
+        });
+
+        await assert.rejects(
+          async () => {
+            await paymentService.createIncomingPayment(request);
+          },
+          WalletAddressNotFoundError,
+          "Does not throw WalletAddressNotFoundError"
+        );
+      });
+
+      test("if wallet address is inactive", async (t) => {
+        const request = {
+          id: randomUUID(),
+          walletAddressId: randomUUID(),
+        };
+
+        t.mock.method(walletAddressService, "getById", async () => {
+          return { isActive: false } as WalletAddress;
+        });
+
+        await assert.rejects(
+          async () => {
+            await paymentService.createIncomingPayment(request);
+          },
+          WalletAddressInactiveError,
+          "Does not throw WalletAddressInactiveError"
+        );
+      });
+
+      test("on wallet address and incomingAmount asset scale mismatch", async (t) => {
+        const request = {
+          id: randomUUID(),
+          walletAddressId: randomUUID(),
+          incomingAmount: {
+            assetCode: "USD",
+            assetScale: 8,
+            value: 100n,
+          },
+        };
+
+        t.mock.method(walletAddressService, "getById", async () => {
+          return {
+            isActive: true,
+            assetCode: "USD",
+            assetScale: 2,
+          } as WalletAddress;
+        });
+
+        await assert.rejects(
+          async () => {
+            await paymentService.createIncomingPayment(request);
+          },
+          IncomingPaymentWalletAddressAssetMismatchError,
+          "Does not throw IncomingPaymentWalletAddressAssetMismatchError"
+        );
+      });
+
+      test("on wallet address and incomingAmount asset code mismatch", async (t) => {
+        const request = {
+          id: randomUUID(),
+          walletAddressId: randomUUID(),
+          incomingAmount: {
+            assetCode: "EUR",
+            assetScale: 2,
+            value: 100n,
+          },
+        };
+
+        t.mock.method(walletAddressService, "getById", async () => {
+          return {
+            isActive: true,
+            assetCode: "USD",
+            assetScale: 2,
+          } as WalletAddress;
+        });
+
+        await assert.rejects(
+          async () => {
+            await paymentService.createIncomingPayment(request);
+          },
+          IncomingPaymentWalletAddressAssetMismatchError,
+          "Does not throw IncomingPaymentWalletAddressAssetMismatchError"
+        );
+      });
+
+      test("if invalid expiry (past)", async (t) => {
+        const request = {
+          id: randomUUID(),
+          walletAddressId: randomUUID(),
+          expiresAt: new Date(Date.now() - 1000),
+        };
+
+        t.mock.method(walletAddressService, "getById", async () => {
+          return {
+            isActive: true,
+          } as WalletAddress;
+        });
+
+        await assert.rejects(
+          async () => {
+            await paymentService.createIncomingPayment(request);
+          },
+          InvalidIncomingPaymentExpiryError,
+          "Does not throw InvalidIncomingPaymentExpiryError"
+        );
+      });
+
+      test("if invalid expiry (exceeds maximum allowed)", async (t) => {
+        const now = Date.now();
+        t.mock.timers.enable({ apis: ["Date"], now });
+
+        const request = {
+          id: randomUUID(),
+          walletAddressId: randomUUID(),
+          expiresAt: new Date(
+            now + ((paymentService as any).INCOMING_PAYMENT_MAX_EXPIRY_MS + 1)
+          ),
+        };
+
+        t.mock.method(walletAddressService, "getById", async () => {
+          return {
+            isActive: true,
+          } as WalletAddress;
+        });
+
+        await assert.rejects(
+          async () => {
+            await paymentService.createIncomingPayment(request);
+          },
+          InvalidIncomingPaymentExpiryError,
+          "Does not throw InvalidIncomingPaymentExpiryError"
+        );
+      });
+    });
+    describe("succeeds", async (t) => {
+      test("without optional fields", async (t) => {
+        const walletAddressId = randomUUID();
+        const request = {
+          walletAddressId,
+        };
+        const walletAddress: WalletAddress = {
+          id: walletAddressId,
+          url: "https://example.com",
+          isActive: true,
+          assetCode: "USD",
+          assetScale: 2,
+        };
+        const now = Date.now();
+
+        t.mock.method(walletAddressService, "getById", async () => {
+          return walletAddress;
+        });
+        const storeSpy = t.mock.method(
+          incomingPaymentRepo,
+          "store",
+          async () => {}
+        );
+        const publishSpy = t.mock.method(
+          eventPublisher,
+          "publish",
+          async () => {}
+        );
+        t.mock.timers.enable({ apis: ["Date"], now });
+
+        const id = await paymentService.createIncomingPayment(request);
+        assert(typeof id === "string");
+
+        const expectedIncomingPayment: IncomingPayment = {
+          id,
+          incomingAmount: undefined,
+          receivedAmount: 0n,
+          expiresAt: new Date(
+            now + (paymentService as any).INCOMING_PAYMENT_DEFAULT_EXPIRY
+          ),
+          walletAddressId: request.walletAddressId,
+          type: "LOCAL",
+          state: "CREATED",
+          microPayments: [],
+          asset: {
+            code: walletAddress.assetCode,
+            scale: walletAddress.assetScale,
+          },
+        };
+
+        // Incoming payment stored correctly
+        assert.strictEqual(storeSpy.mock.calls.length, 1);
+        assert.deepStrictEqual(
+          storeSpy.mock.calls[0].arguments[0],
+          expectedIncomingPayment,
+          "Incoming payment stored incorrectly"
+        );
+
+        // Incoming payment event published correctly
+        assert.strictEqual(publishSpy.mock.calls.length, 1);
+        assert.deepStrictEqual(
+          publishSpy.mock.calls[0].arguments[0],
+          [
+            {
+              type: PaymentEventType.INCOMING_PAYMENT_CREATED,
+              data: { incomingPayment: expectedIncomingPayment },
+            },
+          ],
+          "Incoming payment event published incorrectly"
+        );
+      });
+      test("with all optional fields", async (t) => {
+        const walletAddressId = randomUUID();
+        const now = Date.now();
+        const request = {
+          id: randomUUID(),
+          walletAddressId,
+          incomingAmount: {
+            assetCode: "USD",
+            assetScale: 2,
+            value: 100n,
+          },
+          expiresAt: new Date(now + 7 * 24 * 60 * 60 * 1000), // 7 days
+        };
+        const walletAddress: WalletAddress = {
+          id: walletAddressId,
+          url: "https://example.com",
+          isActive: true,
+          assetCode: "USD",
+          assetScale: 2,
+        };
+
+        t.mock.method(walletAddressService, "getById", async () => {
+          return walletAddress;
+        });
+        const storeSpy = t.mock.method(
+          incomingPaymentRepo,
+          "store",
+          async () => {}
+        );
+        const publishSpy = t.mock.method(
+          eventPublisher,
+          "publish",
+          async () => {}
+        );
+        t.mock.timers.enable({ apis: ["Date"], now });
+
+        const id = await paymentService.createIncomingPayment(request);
+        assert(typeof id === "string");
+
+        const expectedIncomingPayment: IncomingPayment = {
+          id: request.id,
+          incomingAmount: request.incomingAmount.value,
+          receivedAmount: 0n,
+          expiresAt: request.expiresAt,
+          walletAddressId: request.walletAddressId,
+          type: "LOCAL",
+          state: "CREATED",
+          microPayments: [],
+          asset: {
+            code: walletAddress.assetCode,
+            scale: walletAddress.assetScale,
+          },
+        };
+
+        // Incoming payment stored correctly
+        assert.strictEqual(storeSpy.mock.calls.length, 1);
+        assert.deepStrictEqual(
+          storeSpy.mock.calls[0].arguments[0],
+          expectedIncomingPayment,
+          "Incoming payment stored incorrectly"
+        );
+
+        // Incoming payment event published correctly
+        assert.strictEqual(publishSpy.mock.calls.length, 1);
+        assert.deepStrictEqual(
+          publishSpy.mock.calls[0].arguments[0],
+          [
+            {
+              type: PaymentEventType.INCOMING_PAYMENT_CREATED,
+              data: { incomingPayment: expectedIncomingPayment },
+            },
+          ],
+          "Incoming payment event published incorrectly"
+        );
+      });
+    });
+  });
+});

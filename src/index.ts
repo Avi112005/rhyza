@@ -23,7 +23,7 @@ const eventPublisher = new EventPublisher();
 const peerService = new PeerService(new InMemoryRepository<Peer>());
 const ratesService = new RatesService();
 const liquidityService = new LiquidityService();
-export const paymentService = new PaymentService(
+const paymentService = new PaymentService(
   walletAddressService,
   peerService,
   ratesService,
