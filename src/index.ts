@@ -1,3 +1,4 @@
+import { readFileSync } from "fs";
 import { createApp } from "./app";
 import { EventPublisher } from "./event";
 import { LiquidityService } from "./liquidity";
@@ -7,29 +8,36 @@ import {
   PaymentEventType,
   PaymentService,
   Quote,
-  RemoteIncomingPayment,
 } from "./payment";
-import { Peer, PeerService } from "./peer";
+import { IlpPeerService, InMemoryIlpPeerRepository } from "./ilp-peer";
 import { RatesService } from "./rates";
 import { InMemoryRepository } from "./repository";
 import { WalletAddress, WalletAddressService } from "./wallet-address";
+import { IlpConnector } from "./ilp-connector";
+import {
+  RemoteIncomingPayment,
+  RemoteIncomingPaymentService,
+} from "./remote-incoming-payment";
 
 const walletAddressService = new WalletAddressService(
   new InMemoryRepository<WalletAddress>()
 );
 
 const eventPublisher = new EventPublisher();
-
-const peerService = new PeerService(new InMemoryRepository<Peer>());
+const ilpPeerService = new IlpPeerService(new InMemoryIlpPeerRepository());
 const ratesService = new RatesService();
 const liquidityService = new LiquidityService();
-export const paymentService = new PaymentService(
+const remoteIncomingPaymentService = new RemoteIncomingPaymentService(
+  new InMemoryRepository<RemoteIncomingPayment>()
+);
+const ilpConnector = new IlpConnector(ilpPeerService, eventPublisher);
+const paymentService = new PaymentService(
   walletAddressService,
-  peerService,
+  ilpPeerService,
   ratesService,
   liquidityService,
+  remoteIncomingPaymentService,
   new InMemoryRepository<IncomingPayment>(),
-  new InMemoryRepository<RemoteIncomingPayment>(),
   new InMemoryRepository<OutgoingPayment>(),
   new InMemoryRepository<Quote>(),
   eventPublisher
@@ -40,22 +48,56 @@ eventPublisher.registerConsumer(
   paymentService.handleLocalOutgoingPaymentFundedEvent.bind(paymentService)
 );
 
+eventPublisher.registerConsumer(
+  PaymentEventType.REMOTE_QUOTE_REQUESTED,
+  ilpConnector.handleRemoteQuoteRequestedEvent.bind(ilpConnector)
+);
+
+eventPublisher.registerConsumer(
+  PaymentEventType.ILP_PAYMENT_PREPARE_PACKET_ACCEPTED,
+  ilpConnector.handlePaymentPreparePacketAcceptedEvent.bind(ilpConnector)
+);
+
+eventPublisher.registerConsumer(
+  PaymentEventType.ILP_QUOTE_PREPARE_PACKET_RECEIVED,
+  paymentService.handleIlpQuotePacketReceived.bind(paymentService)
+);
+
+eventPublisher.registerConsumer(
+  PaymentEventType.ILP_PAYMENT_PREPARE_PACKET_RECEIVED,
+  paymentService.handleIlpPaymentPreparePacketReceivedEvent.bind(paymentService)
+);
+
+eventPublisher.registerConsumer(
+  PaymentEventType.ILP_PAYMENT_FULFILL_PACKET_RECEIVED,
+  paymentService.handleIlpPaymentFulfillPacketReceivedEvent.bind(paymentService)
+);
+
+eventPublisher.registerConsumer(
+  PaymentEventType.REMOTE_OUTGOING_PAYMENT_FUNDED,
+  ilpConnector.handleRemoteOutgoingPaymentFundedEvent.bind(ilpConnector)
+);
+
 (async () => {
-  await walletAddressService.createWalletAddress({
-    id: "a1469618-077a-447d-b5a3-a9ed11265a63",
-    url: "",
-    assetCode: "USD",
-    assetScale: 2,
-  });
+  const data = readFileSync("./seed.json", "utf8");
+  const seed = JSON.parse(data)[process.argv[2] ?? "rafiki-a"];
 
-  await walletAddressService.createWalletAddress({
-    id: "a1469618-077a-447d-b5a3-a9ed11265a64",
-    url: "",
-    assetCode: "USD",
-    assetScale: 2,
-  });
+  for (const walletAddress of seed.walletAddresses) {
+    await walletAddressService.createWalletAddress(walletAddress);
+  }
 
-  const start = createApp(paymentService);
+  for (const peer of seed.peers) {
+    await ilpPeerService.create(peer);
+  }
+
+  ilpConnector.ownDestinationAddress = seed.ilpConfig.address;
+
+  const start = createApp(
+    Number(seed.port),
+    paymentService,
+    remoteIncomingPaymentService,
+    ilpConnector
+  );
 
   await start();
 })();

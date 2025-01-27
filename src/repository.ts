@@ -8,7 +8,7 @@ export interface Repository<T extends BaseEntity> {
 }
 
 export class InMemoryRepository<T extends BaseEntity> implements Repository<T> {
-  private map: Map<string, T> = new Map();
+  map: Map<string, T> = new Map();
 
   public async store(entity: T): Promise<void> {
     this.map.set(entity.id, entity);

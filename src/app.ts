@@ -1,8 +1,25 @@
 import fastify from "fastify";
 import { PaymentService } from "./payment";
+import { IlpConnector } from "./ilp-connector";
+import { RemoteIncomingPaymentServiceAdapter } from "./remote-incoming-payment";
 
-export function createApp(paymentService: PaymentService) {
+export function createApp(
+  port: number,
+  paymentService: PaymentService,
+  remoteIncomingPaymentService: RemoteIncomingPaymentServiceAdapter,
+  ilpConnector: IlpConnector
+) {
   const app = fastify();
+
+  app.addContentTypeParser(
+    "application/octet-stream",
+    {
+      parseAs: "buffer",
+    },
+    async function (_: any, payload: Buffer) {
+      return payload;
+    }
+  );
 
   app.post("/incoming-payment", async function handler(request, reply) {
     const requestBody = request.body as any;
@@ -20,12 +37,35 @@ export function createApp(paymentService: PaymentService) {
       walletAddressId: requestBody.walletAddressId,
     });
 
+    const ilpDetails = ilpConnector.getIlpDetails();
+
+    reply.code(201).send({ id, ilpDetails });
+  });
+
+  app.post("/remote-incoming-payment", async function handler(request, reply) {
+    const requestBody = request.body as any;
+
+    const id = await remoteIncomingPaymentService.createRemoteIncomingPayment({
+      expiresAt: requestBody.expiresAt,
+      walletAddressId: requestBody.walletAddressId, // TODO: needs to be wallet address URL
+      incomingAmount: requestBody.incomingAmount
+        ? {
+            assetCode: requestBody.incomingAmount.assetCode,
+            assetScale: requestBody.incomingAmount.assetScale,
+            value: BigInt(requestBody.incomingAmount.value),
+          }
+        : undefined,
+      resourceServerUrl: "http://localhost:3001/incoming-payment",
+    });
+
     reply.code(201).send({ id });
   });
 
   app.post("/quote", async function handler(request, reply) {
     const requestBody = request.body as any;
 
+    // TODO: As an enhancement, we can allow the client to specify whether they want back a 202
+    // to just be able to fetch the quote later (async mode)
     const id = await paymentService.createQuote({
       id: requestBody.id,
       debitAmount: requestBody.debitAmount
@@ -46,6 +86,8 @@ export function createApp(paymentService: PaymentService) {
       incomingPaymentId: requestBody.incomingPaymentId,
     });
 
+    // TODO: wait for remote quote to complete if necessary
+
     reply.code(201).send({ id });
   });
 
@@ -61,7 +103,29 @@ export function createApp(paymentService: PaymentService) {
     reply.code(201).send({ id });
   });
 
+  app.post("/ilp", async function handler(request, reply) {
+    // console.log("Received prepare packet");
+    await ilpConnector.handlePreparePacket(
+      request.headers["request-id"] as string,
+      request.headers["from-peer"] as string,
+      request.body as Buffer
+    );
+
+    reply.code(201).send();
+  });
+
+  app.post("/ilp-reply", async function handler(request, reply) {
+    // console.log("Received reject or fulfill packet");
+    await ilpConnector.handleFulfillOrRejectPacket(
+      request.headers["request-id"] as string,
+      request.body as Buffer
+    );
+
+    reply.code(201).send();
+  });
+
   return async () => {
-    await app.listen({ port: 3000 });
+    await app.listen({ port });
+    console.log(`Listening on port ${port}`);
   };
 }
