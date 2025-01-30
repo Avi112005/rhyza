@@ -1,6 +1,6 @@
 import { readFileSync } from "fs";
 import { createApp } from "./app";
-import { EventPublisher } from "./event";
+import { EventEmitterPubSub } from "./event";
 import { LiquidityService } from "./liquidity";
 import {
   IncomingPayment,
@@ -19,18 +19,20 @@ import {
   RemoteIncomingPaymentService,
 } from "./remote-incoming-payment";
 
+const eventEmitterPubSub = new EventEmitterPubSub();
+const eventConsumer = eventEmitterPubSub;
+const eventProducer = eventEmitterPubSub;
+
 const walletAddressService = new WalletAddressService(
   new InMemoryRepository<WalletAddress>()
 );
-
-const eventPublisher = new EventPublisher();
 const ilpPeerService = new IlpPeerService(new InMemoryIlpPeerRepository());
 const ratesService = new RatesService();
 const liquidityService = new LiquidityService();
 const remoteIncomingPaymentService = new RemoteIncomingPaymentService(
   new InMemoryRepository<RemoteIncomingPayment>()
 );
-const ilpConnector = new IlpConnector(ilpPeerService, eventPublisher);
+const ilpConnector = new IlpConnector(ilpPeerService, eventProducer);
 const paymentService = new PaymentService(
   walletAddressService,
   ilpPeerService,
@@ -40,45 +42,49 @@ const paymentService = new PaymentService(
   new InMemoryRepository<IncomingPayment>(),
   new InMemoryRepository<OutgoingPayment>(),
   new InMemoryRepository<Quote>(),
-  eventPublisher
-);
-
-eventPublisher.registerConsumer(
-  PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED,
-  paymentService.handleLocalOutgoingPaymentFundedEvent.bind(paymentService)
-);
-
-eventPublisher.registerConsumer(
-  PaymentEventType.REMOTE_QUOTE_REQUESTED,
-  ilpConnector.handleRemoteQuoteRequestedEvent.bind(ilpConnector)
-);
-
-eventPublisher.registerConsumer(
-  PaymentEventType.ILP_PAYMENT_PREPARE_PACKET_ACCEPTED,
-  ilpConnector.handlePaymentPreparePacketAcceptedEvent.bind(ilpConnector)
-);
-
-eventPublisher.registerConsumer(
-  PaymentEventType.ILP_QUOTE_PREPARE_PACKET_RECEIVED,
-  paymentService.handleIlpQuotePacketReceived.bind(paymentService)
-);
-
-eventPublisher.registerConsumer(
-  PaymentEventType.ILP_PAYMENT_PREPARE_PACKET_RECEIVED,
-  paymentService.handleIlpPaymentPreparePacketReceivedEvent.bind(paymentService)
-);
-
-eventPublisher.registerConsumer(
-  PaymentEventType.ILP_PAYMENT_FULFILL_PACKET_RECEIVED,
-  paymentService.handleIlpPaymentFulfillPacketReceivedEvent.bind(paymentService)
-);
-
-eventPublisher.registerConsumer(
-  PaymentEventType.REMOTE_OUTGOING_PAYMENT_FUNDED,
-  ilpConnector.handleRemoteOutgoingPaymentFundedEvent.bind(ilpConnector)
+  eventProducer
 );
 
 (async () => {
+  await eventConsumer.registerConsumer(
+    PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED,
+    paymentService.handleLocalOutgoingPaymentFundedEvent.bind(paymentService)
+  );
+
+  await eventConsumer.registerConsumer(
+    PaymentEventType.REMOTE_QUOTE_REQUESTED,
+    ilpConnector.handleRemoteQuoteRequestedEvent.bind(ilpConnector)
+  );
+
+  await eventConsumer.registerConsumer(
+    PaymentEventType.ILP_PAYMENT_PREPARE_PACKET_ACCEPTED,
+    ilpConnector.handlePaymentPreparePacketAcceptedEvent.bind(ilpConnector)
+  );
+
+  await eventConsumer.registerConsumer(
+    PaymentEventType.ILP_QUOTE_PREPARE_PACKET_RECEIVED,
+    paymentService.handleIlpQuotePacketReceived.bind(paymentService)
+  );
+
+  await eventConsumer.registerConsumer(
+    PaymentEventType.ILP_PAYMENT_PREPARE_PACKET_RECEIVED,
+    paymentService.handleIlpPaymentPreparePacketReceivedEvent.bind(
+      paymentService
+    )
+  );
+
+  await eventConsumer.registerConsumer(
+    PaymentEventType.ILP_PAYMENT_FULFILL_PACKET_RECEIVED,
+    paymentService.handleIlpPaymentFulfillPacketReceivedEvent.bind(
+      paymentService
+    )
+  );
+
+  await eventConsumer.registerConsumer(
+    PaymentEventType.REMOTE_OUTGOING_PAYMENT_FUNDED,
+    ilpConnector.handleRemoteOutgoingPaymentFundedEvent.bind(ilpConnector)
+  );
+
   const data = readFileSync("./seed.json", "utf8");
   const seed = JSON.parse(data)[process.argv[2] ?? "rafiki-a"];
 
