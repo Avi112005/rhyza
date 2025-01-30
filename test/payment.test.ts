@@ -237,13 +237,11 @@ describe("Payment Service", () => {
         });
         const storeSpy = t.mock.method(
           incomingPaymentRepo,
-          "store",
-          async () => {}
+          "store"
         );
         const publishSpy = t.mock.method(
           eventPublisher,
-          "publish",
-          async () => {}
+          "publish"
         );
         t.mock.timers.enable({ apis: ["Date"], now });
 
