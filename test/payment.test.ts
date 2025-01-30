@@ -4,7 +4,9 @@ import { randomUUID } from "node:crypto";
 
 import {
   DuplicateIncomingPaymentFoundError,
+  DuplicateQuoteFoundError,
   IncomingPayment,
+  IncomingPaymentNotFoundError,
   IncomingPaymentWalletAddressAssetMismatchError,
   InvalidIncomingPaymentExpiryError,
   OutgoingPayment,
@@ -66,9 +68,7 @@ describe("Payment Service", () => {
         });
 
         await assert.rejects(
-          async () => {
-            await paymentService.createIncomingPayment(request);
-          },
+          paymentService.createIncomingPayment(request),
           DuplicateIncomingPaymentFoundError,
           "Does not throw DuplicateIncomingPaymentFoundError"
         );
@@ -85,9 +85,7 @@ describe("Payment Service", () => {
         });
 
         await assert.rejects(
-          async () => {
-            await paymentService.createIncomingPayment(request);
-          },
+          paymentService.createIncomingPayment(request),
           WalletAddressNotFoundError,
           "Does not throw WalletAddressNotFoundError"
         );
@@ -130,9 +128,7 @@ describe("Payment Service", () => {
         });
 
         await assert.rejects(
-          async () => {
-            await paymentService.createIncomingPayment(request);
-          },
+          paymentService.createIncomingPayment(request),
           IncomingPaymentWalletAddressAssetMismatchError,
           "Does not throw IncomingPaymentWalletAddressAssetMismatchError"
         );
@@ -158,9 +154,7 @@ describe("Payment Service", () => {
         });
 
         await assert.rejects(
-          async () => {
-            await paymentService.createIncomingPayment(request);
-          },
+          paymentService.createIncomingPayment(request),
           IncomingPaymentWalletAddressAssetMismatchError,
           "Does not throw IncomingPaymentWalletAddressAssetMismatchError"
         );
@@ -180,9 +174,7 @@ describe("Payment Service", () => {
         });
 
         await assert.rejects(
-          async () => {
-            await paymentService.createIncomingPayment(request);
-          },
+          paymentService.createIncomingPayment(request),
           InvalidIncomingPaymentExpiryError,
           "Does not throw InvalidIncomingPaymentExpiryError"
         );
@@ -207,9 +199,7 @@ describe("Payment Service", () => {
         });
 
         await assert.rejects(
-          async () => {
-            await paymentService.createIncomingPayment(request);
-          },
+          paymentService.createIncomingPayment(request),
           InvalidIncomingPaymentExpiryError,
           "Does not throw InvalidIncomingPaymentExpiryError"
         );
@@ -233,14 +223,8 @@ describe("Payment Service", () => {
         t.mock.method(walletAddressService, "getById", async () => {
           return walletAddress;
         });
-        const storeSpy = t.mock.method(
-          incomingPaymentRepo,
-          "store"
-        );
-        const publishSpy = t.mock.method(
-          eventPublisher,
-          "publish"
-        );
+        const storeSpy = t.mock.method(incomingPaymentRepo, "store");
+        const publishSpy = t.mock.method(eventPublisher, "publish");
         t.mock.timers.enable({ apis: ["Date"], now });
 
         const id = await paymentService.createIncomingPayment(request);
@@ -360,5 +344,81 @@ describe("Payment Service", () => {
         );
       });
     });
+  });
+
+  describe("createQuote", async (t) => {
+    describe("throws", async (t) => {
+      test("if provided id is not unique", async (t) => {
+        const id = randomUUID();
+        const request = {
+          id,
+          walletAddressId: randomUUID(),
+          senderWalletAddressId: randomUUID(),
+          incomingPaymentId: randomUUID(),
+        };
+
+        t.mock.method(quoteRepo, "fetchById", async () => {
+          return id;
+        });
+
+        await assert.rejects(
+          paymentService.createQuote(request),
+          DuplicateQuoteFoundError,
+          "Does not throw DuplicateQuoteFoundError"
+        );
+      });
+      test("if wallet address is not found", async (t) => {
+        const request = {
+          id: randomUUID(),
+          walletAddressId: randomUUID(),
+          senderWalletAddressId: randomUUID(),
+          incomingPaymentId: randomUUID(),
+        };
+
+        await assert.rejects(
+          paymentService.createQuote(request),
+          WalletAddressNotFoundError,
+          "Does not throw WalletAddressNotFoundError"
+        );
+      });
+      test("if wallet address is not active", async (t) => {
+        const request = {
+          id: randomUUID(),
+          walletAddressId: randomUUID(),
+          senderWalletAddressId: randomUUID(),
+          incomingPaymentId: randomUUID(),
+        };
+
+        t.mock.method(walletAddressRepo, "fetchById", async () => {
+          return { isActive: false } as WalletAddress;
+        });
+
+        await assert.rejects(
+          paymentService.createQuote(request),
+          WalletAddressInactiveError,
+          "Does not throw WalletAddressInactiveError"
+        );
+      });
+      test("if incoming payment is not found", async (t) => {
+        const request = {
+          id: randomUUID(),
+          walletAddressId: randomUUID(),
+          senderWalletAddressId: randomUUID(),
+          incomingPaymentId: randomUUID(),
+        };
+
+        t.mock.method(walletAddressRepo, "fetchById", async () => {
+          return { isActive: true } as WalletAddress;
+        });
+
+        await assert.rejects(
+          paymentService.createQuote(request),
+          IncomingPaymentNotFoundError,
+          "Does not throw IncomingPaymentNotFoundError"
+        );
+      });
+    });
+    // TODO:
+    // describe("succeeds", async (t) => {});
   });
 });
