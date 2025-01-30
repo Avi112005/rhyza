@@ -104,9 +104,7 @@ describe("Payment Service", () => {
         });
 
         await assert.rejects(
-          async () => {
-            await paymentService.createIncomingPayment(request);
-          },
+          paymentService.createIncomingPayment(request),
           WalletAddressInactiveError,
           "Does not throw WalletAddressInactiveError"
         );
