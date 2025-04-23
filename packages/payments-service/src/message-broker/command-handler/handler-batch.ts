@@ -4,6 +4,7 @@ import { IMessage, IMessageConsumer, IMessageProducer } from "../message";
 
 import {
   CreateIncomingPaymentRequest,
+  CreateOutgoingPaymentFromIncomingPaymentRequest,
   CreateOutgoingPaymentFromQuoteRequest,
   CreateQuoteRequest,
   PaymentService,
@@ -11,7 +12,7 @@ import {
 
 import {
   CreateIncomingPaymentCmd,
-  CreateOutgoingPaymentFromQuoteCmd,
+  CreateOutgoingPaymentCmd,
   CreateQuoteCmd,
   Topic,
 } from "../command";
@@ -73,13 +74,10 @@ export class RafikiCommandHandler {
               this.toDomainQuote(message as CreateQuoteCmd)
             );
             break;
-          case CreateOutgoingPaymentFromQuoteCmd.name:
-            response =
-              await this._paymentService.createOutgoingPaymentFromQuote(
-                this.toDomainOutgoingFromQuote(
-                  message as CreateOutgoingPaymentFromQuoteCmd
-                )
-              );
+          case CreateOutgoingPaymentCmd.name:
+            response = await this._paymentService.createOutgoingPayment(
+              this.toDomainOutgoing(message as CreateOutgoingPaymentCmd)
+            );
             break;
           default: {
             logger.warn(
@@ -208,13 +206,31 @@ export class RafikiCommandHandler {
     };
   }
 
-  public toDomainOutgoingFromQuote(
-    cmd: CreateOutgoingPaymentFromQuoteCmd
-  ): CreateOutgoingPaymentFromQuoteRequest {
-    return {
-      id: cmd.payload.id,
+  public toDomainOutgoing(
+    cmd: CreateOutgoingPaymentCmd
+  ): CreateOutgoingPaymentFromQuoteRequest &
+    CreateOutgoingPaymentFromIncomingPaymentRequest {
+    const request = {
       senderWalletAddressId: cmd.payload.senderWalletAddressId,
-      quoteId: cmd.payload.quoteId,
-    };
+    } as CreateOutgoingPaymentFromQuoteRequest &
+      CreateOutgoingPaymentFromIncomingPaymentRequest;
+
+    if (cmd.payload.id) {
+      request.id = cmd.payload.id;
+    }
+    if (cmd.payload.incomingPaymentId) {
+      request.incomingPaymentId = cmd.payload.incomingPaymentId;
+    }
+    if (cmd.payload.quoteId) {
+      request.quoteId = cmd.payload.quoteId;
+    }
+    if (cmd.payload.debitAmount) {
+      request.debitAmount = {
+        ...cmd.payload.debitAmount,
+        value: BigInt(cmd.payload.debitAmount.value),
+      };
+    }
+
+    return request;
   }
 }

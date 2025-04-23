@@ -2,6 +2,7 @@ import { IMessage, IMessageConsumer, IMessageProducer } from "../message";
 
 import {
   CreateIncomingPaymentRequest,
+  CreateOutgoingPaymentFromIncomingPaymentRequest,
   CreateOutgoingPaymentFromQuoteRequest,
   CreateQuoteRequest,
   PaymentService,
@@ -9,7 +10,7 @@ import {
 
 import {
   CreateIncomingPaymentCmd,
-  CreateOutgoingPaymentFromQuoteCmd,
+  CreateOutgoingPaymentCmd,
   CreateQuoteCmd,
   Topic,
 } from "../command";
@@ -57,12 +58,12 @@ export class RafikiCommandHandler {
       logger.debug({ message }, `CommandHandler: Received command`);
 
       const stopTimerMsgHandler = this._telemetryService.startTimer(
-        'command_handler_msg_handler_ms',
+        "command_handler_msg_handler_ms",
         {
-          callName: 'Handler:handleMessage',
-          description: 'Time to process a message.'
+          callName: "Handler:handleMessage",
+          description: "Time to process a message.",
         }
-      )
+      );
       try {
         switch (message.msgName) {
           case CreateIncomingPaymentCmd.name:
@@ -95,13 +96,10 @@ export class RafikiCommandHandler {
               );
             }
             break;
-          case CreateOutgoingPaymentFromQuoteCmd.name:
-            const outPayId =
-              await this._paymentService.createOutgoingPaymentFromQuote(
-                this.toDomainOutgoingFromQuote(
-                  message as CreateOutgoingPaymentFromQuoteCmd
-                )
-              );
+          case CreateOutgoingPaymentCmd.name:
+            const outPayId = await this._paymentService.createOutgoingPayment(
+              this.toDomainOutgoing(message as CreateOutgoingPaymentCmd)
+            );
             if (message.requestId) {
               await this._messageProducer.send(
                 new ApiRspOutgoingPaymentEvent(
@@ -155,8 +153,11 @@ export class RafikiCommandHandler {
         }
         logger.error(err);
       } finally {
-        stopTimerMsgHandler()
-        this._telemetryService.incrementCounter("message_handler_commands_processed", 1);
+        stopTimerMsgHandler();
+        this._telemetryService.incrementCounter(
+          "message_handler_commands_processed",
+          1
+        );
 
         logger.debug(`CommandHandler: Done`);
         resolve();
@@ -207,13 +208,31 @@ export class RafikiCommandHandler {
     };
   }
 
-  public toDomainOutgoingFromQuote(
-    cmd: CreateOutgoingPaymentFromQuoteCmd
-  ): CreateOutgoingPaymentFromQuoteRequest {
-    return {
-      id: cmd.payload.id,
+  public toDomainOutgoing(
+    cmd: CreateOutgoingPaymentCmd
+  ): CreateOutgoingPaymentFromQuoteRequest &
+    CreateOutgoingPaymentFromIncomingPaymentRequest {
+    const request = {
       senderWalletAddressId: cmd.payload.senderWalletAddressId,
-      quoteId: cmd.payload.quoteId,
-    };
+    } as CreateOutgoingPaymentFromQuoteRequest &
+      CreateOutgoingPaymentFromIncomingPaymentRequest;
+
+    if (cmd.payload.id) {
+      request.id = cmd.payload.id;
+    }
+    if (cmd.payload.incomingPaymentId) {
+      request.incomingPaymentId = cmd.payload.incomingPaymentId;
+    }
+    if (cmd.payload.quoteId) {
+      request.quoteId = cmd.payload.quoteId;
+    }
+    if (cmd.payload.debitAmount) {
+      request.debitAmount = {
+        ...cmd.payload.debitAmount,
+        value: BigInt(cmd.payload.debitAmount.value),
+      };
+    }
+
+    return request;
   }
 }

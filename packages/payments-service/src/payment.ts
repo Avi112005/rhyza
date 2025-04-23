@@ -25,7 +25,7 @@ export class IncomingPaymentNotFoundError extends Error {}
 export class IncomingPaymentInvalidStateError extends Error {}
 export class InvalidIncomingPaymentExpiryError extends Error {}
 export class DuplicateIncomingPaymentFoundError extends Error {}
-export class InvalidQuoteAmountError extends Error {}
+export class InvalidAmountError extends Error {}
 export class CouldNotConvertExchangeRatesError extends Error {}
 export class DuplicateQuoteFoundError extends Error {}
 export class QuoteNotFoundError extends Error {}
@@ -33,8 +33,10 @@ export class PeerNotFoundError extends Error {}
 export class QuoteExpiredError extends Error {}
 export class IncomingPaymentCannotReceiveMicroPayment extends Error {}
 export class DuplicateOutgoingPaymentFoundError extends Error {}
+export class OutgoingPaymentMissingIdentifierError extends Error {}
 export class OutgoingPaymentNotFoundError extends Error {}
 export class OutgoingPaymentInvalidStateError extends Error {}
+export class InvalidIdLengthError extends Error {}
 
 export interface CreateIncomingPaymentRequest {
   id?: string;
@@ -73,7 +75,7 @@ export interface MicroPayment {
 
 export interface OutgoingPayment {
   id: string;
-  quoteId: string;
+  quoteId?: string;
   asset: Asset;
   state: OutgoingPaymentState;
   sentAmount: bigint;
@@ -151,8 +153,9 @@ export interface RemoteOutgoingPaymentFundedEvent extends Event {
   data: {
     outgoingPaymentId: string;
     debitAmount: Amount;
-    receiveAmount: Amount;
-    quoteExpiresAt: Date;
+    // Wont have receiveAmount when creating outgoing payment from remote local incoming payment
+    receiveAmount?: Amount;
+    quoteExpiresAt?: Date;
     remoteIncomingPaymentUrl: string;
     ilpDetails: IlpDetails;
   };
@@ -175,9 +178,11 @@ interface OutgoingPaymentCompletedEvent extends Event {
 interface LocalOutgoingPaymentFundedEvent extends Event {
   type: PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED;
   data: {
-    quote: Quote;
     outgoingPayment: OutgoingPayment;
     incomingPayment: IncomingPayment;
+    senderWalletAddressId: string;
+    receiveAmount: Amount;
+    debitAmount: Amount;
   };
 }
 
@@ -234,7 +239,7 @@ export interface IlpQuotePacketReceivedEvent extends Event {
   };
 }
 
-const LocalIncomingPaymentState = {
+export const LocalIncomingPaymentState = {
   CREATED: "CREATED", // normal state, can add new micropayments
   EXPIRED: "EXPIRED", // available for reads only, cannot add new entries
   COMPLETED: "COMPLETED", // not available to reads or writes, historic only (can be changed back to inactive)
@@ -274,6 +279,12 @@ export interface CreateOutgoingPaymentFromQuoteRequest {
   // isFunded: boolean; TODO if the outgoing payment request came from a third party we need to webhook out to the ASE to "fund" the payment
 }
 
+export interface CreateOutgoingPaymentFromIncomingPaymentRequest {
+  id?: string;
+  incomingPaymentId: string;
+  senderWalletAddressId: string;
+  debitAmount: Amount;
+}
 export class PaymentService {
   private INCOMING_PAYMENT_MAX_EXPIRY_MS = 2592000000; // 30 days
   private INCOMING_PAYMENT_DEFAULT_EXPIRY = 1000 * 60 * 10;
@@ -298,6 +309,12 @@ export class PaymentService {
     let id: string;
 
     if (request.id) {
+      if (request.id.length > 64) {
+        throw new InvalidIdLengthError(
+          "Incoming Payment ID is too long (max 64 characters)"
+        );
+      }
+
       const exists = await this.incomingPaymentRepository.exists(request.id);
 
       if (exists) {
@@ -379,6 +396,12 @@ export class PaymentService {
   public async createQuote(request: CreateQuoteRequest): Promise<string> {
     let id: string;
     if (request.id) {
+      if (request.id.length > 64) {
+        throw new InvalidIdLengthError(
+          "Quote ID is too long (max 64 characters)"
+        );
+      }
+
       const exists = await this.quoteRepository.exists(request.id);
 
       if (exists) {
@@ -430,7 +453,7 @@ export class PaymentService {
     let exchangeRate: number;
 
     if (request.debitAmount) {
-      const result = await this.calculateQuoteFromDebitAmount({
+      const result = await this.calculateReceiveAmountFromDebitAmount({
         debitAmount: request.debitAmount,
         walletAddress,
         incomingPayment,
@@ -440,7 +463,7 @@ export class PaymentService {
       exchangeRate = result.exchangeRate;
       quoteDebitAmount = request.debitAmount;
     } else if (request.receiveAmount) {
-      const result = await this.calculateQuoteFromReceiveAmount({
+      const result = await this.calculateDebitAmountFromReceiveAmount({
         receiveAmount: request.receiveAmount,
         walletAddress,
         incomingPayment,
@@ -450,7 +473,7 @@ export class PaymentService {
       exchangeRate = result.exchangeRate;
       quoteReceiveAmount = request.receiveAmount;
     } else if (incomingPayment.incomingAmount) {
-      const result = await this.calculateQuoteFromIncomingPaymentAmount({
+      const result = await this.calculateDebitAmountFromIncomingPaymentAmount({
         walletAddress,
         incomingPayment: {
           ...incomingPayment,
@@ -466,7 +489,7 @@ export class PaymentService {
         value: incomingPayment.incomingAmount,
       };
     } else {
-      throw new InvalidQuoteAmountError();
+      throw new InvalidAmountError();
     }
 
     const quoteDefaultExpiryMs = new Date().getTime() + this.QUOTE_EXPIRY_MS;
@@ -528,7 +551,7 @@ export class PaymentService {
     return id;
   }
 
-  private async calculateQuoteFromDebitAmount({
+  private async calculateReceiveAmountFromDebitAmount({
     debitAmount,
     walletAddress,
     incomingPayment,
@@ -545,7 +568,7 @@ export class PaymentService {
       debitAmount.assetScale !== walletAddress.assetScale ||
       debitAmount.value <= 0n
     ) {
-      throw new InvalidQuoteAmountError();
+      throw new InvalidAmountError();
     }
 
     const isSameAssetQuote =
@@ -591,7 +614,7 @@ export class PaymentService {
     };
   }
 
-  private async calculateQuoteFromReceiveAmount({
+  private async calculateDebitAmountFromReceiveAmount({
     receiveAmount,
     walletAddress,
     incomingPayment,
@@ -608,7 +631,7 @@ export class PaymentService {
       receiveAmount.assetScale !== incomingPayment.asset.scale ||
       receiveAmount.value <= 0n
     ) {
-      throw new InvalidQuoteAmountError();
+      throw new InvalidAmountError();
     }
 
     const isSameAssetQuote =
@@ -654,7 +677,7 @@ export class PaymentService {
     };
   }
 
-  private async calculateQuoteFromIncomingPaymentAmount({
+  private async calculateDebitAmountFromIncomingPaymentAmount({
     walletAddress,
     incomingPayment,
   }: {
@@ -670,7 +693,7 @@ export class PaymentService {
       walletAddress.assetCode !== incomingPayment.asset.code ||
       walletAddress.assetScale !== incomingPayment.asset.scale
     ) {
-      throw new InvalidQuoteAmountError();
+      throw new InvalidAmountError();
     }
 
     if (incomingPayment.asset.code === walletAddress.assetCode) {
@@ -714,12 +737,36 @@ export class PaymentService {
     };
   }
 
-  public async createOutgoingPaymentFromQuote(
+  public async createOutgoingPayment(
+    request:
+      | CreateOutgoingPaymentFromQuoteRequest
+      | CreateOutgoingPaymentFromIncomingPaymentRequest
+  ) {
+    if ("quoteId" in request) {
+      return this.createOutgoingPaymentFromQuote(
+        request as CreateOutgoingPaymentFromQuoteRequest
+      );
+    } else if ("incomingPaymentId" in request) {
+      return this.createOutgoingPaymentFromIncomingPayment(
+        request as CreateOutgoingPaymentFromIncomingPaymentRequest
+      );
+    } else {
+      throw new OutgoingPaymentMissingIdentifierError();
+    }
+  }
+
+  private async createOutgoingPaymentFromQuote(
     request: CreateOutgoingPaymentFromQuoteRequest
   ) {
     let outgoingPaymentId;
 
     if (request.id) {
+      if (request.id.length > 64) {
+        throw new InvalidIdLengthError(
+          "Outgoing Payment ID is too long (max 64 characters)"
+        );
+      }
+
       const exists = await this.outgoingPaymentRepository.exists(request.id);
 
       if (exists) {
@@ -796,7 +843,9 @@ export class PaymentService {
         data: {
           outgoingPayment,
           incomingPayment,
-          quote,
+          senderWalletAddressId: quote.senderWalletAddressId,
+          receiveAmount: quote.receiveAmount,
+          debitAmount: quote.debitAmount,
         },
       };
 
@@ -852,8 +901,161 @@ export class PaymentService {
     return outgoingPayment.id;
   }
 
-  public async createOutgoingPaymentFromIncomingPayment() {
-    throw new Error("not implemented");
+  private async createOutgoingPaymentFromIncomingPayment(
+    request: CreateOutgoingPaymentFromIncomingPaymentRequest
+  ) {
+    let outgoingPaymentId;
+
+    if (request.id) {
+      if (request.id.length > 64) {
+        throw new InvalidIdLengthError(
+          "Outgoing Payment ID is too long (max 64 characters)"
+        );
+      }
+
+      const exists = await this.outgoingPaymentRepository.exists(request.id);
+
+      if (exists) {
+        throw new DuplicateOutgoingPaymentFoundError();
+      }
+      outgoingPaymentId = request.id;
+    } else {
+      outgoingPaymentId = crypto.randomUUID();
+    }
+
+    const [walletAddress, incomingPayment] = await Promise.all([
+      this.walletAddressService.getById(request.senderWalletAddressId),
+      this.fetchIncomingPayment(request.incomingPaymentId),
+    ]);
+
+    if (!walletAddress) {
+      throw new WalletAddressNotFoundError();
+    }
+
+    if (!walletAddress.isActive) {
+      throw new WalletAddressInactiveError();
+    }
+
+    if (!incomingPayment) {
+      throw new IncomingPaymentNotFoundError();
+    }
+
+    if (incomingPayment.type === "LOCAL") {
+      if (incomingPayment.state !== LocalIncomingPaymentState.CREATED) {
+        throw new IncomingPaymentInvalidStateError();
+      }
+
+      let debitAmount: Amount;
+      let receiveAmount: Amount;
+
+      if (
+        request.debitAmount.assetCode !== walletAddress.assetCode ||
+        request.debitAmount.assetScale !== walletAddress.assetScale ||
+        request.debitAmount.value <= 0n
+      ) {
+        throw new InvalidAmountError();
+      }
+
+      debitAmount = request.debitAmount;
+
+      const result = await this.calculateReceiveAmountFromDebitAmount({
+        debitAmount,
+        walletAddress,
+        incomingPayment,
+      });
+
+      receiveAmount = result.receiveAmount;
+
+      if (
+        typeof incomingPayment.incomingAmount === "bigint" &&
+        receiveAmount.value < incomingPayment.incomingAmount
+      ) {
+        throw new InvalidAmountError();
+      }
+
+      const walletAddressFundRequest: WalletAddressDepositLiquidityRequest = {
+        id: crypto.randomUUID(),
+        type: LiquidityRequestType.DEPOSIT_WALLET_ADDRESS,
+        data: {
+          walletAddressId: walletAddress.id,
+          amount: debitAmount,
+        },
+      };
+
+      await this.liquidityService.execute([walletAddressFundRequest]);
+
+      const outgoingPayment: OutgoingPayment = {
+        id: outgoingPaymentId,
+        senderWalletAddressId: walletAddress.id,
+        asset: {
+          code: walletAddress.assetCode,
+          scale: walletAddress.assetScale,
+        },
+        debitAmount: debitAmount.value,
+        sentAmount: 0n,
+        localIncomingPaymentId: incomingPayment.id,
+        state: OutgoingPaymentState.FUNDED,
+      };
+
+      const localOutgoingPaymentFundedEvent: LocalOutgoingPaymentFundedEvent = {
+        type: PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED,
+        data: {
+          outgoingPayment,
+          incomingPayment,
+          senderWalletAddressId: walletAddress.id,
+          receiveAmount,
+          debitAmount,
+        },
+      };
+
+      await this.outgoingPaymentRepository.store(outgoingPayment);
+      await this.paymentEventProducer.publish([
+        localOutgoingPaymentFundedEvent,
+      ]);
+
+      return outgoingPayment.id;
+    } else {
+      const walletAddressFundRequest: WalletAddressDepositLiquidityRequest = {
+        id: crypto.randomUUID(),
+        type: LiquidityRequestType.DEPOSIT_WALLET_ADDRESS,
+        data: {
+          walletAddressId: request.senderWalletAddressId,
+          amount: request.debitAmount,
+        },
+      };
+
+      await this.liquidityService.execute([walletAddressFundRequest]);
+
+      const outgoingPayment: OutgoingPayment = {
+        id: crypto.randomUUID(),
+        senderWalletAddressId: walletAddress.id,
+        asset: {
+          code: walletAddress.assetCode,
+          scale: walletAddress.assetScale,
+        },
+        debitAmount: request.debitAmount.value,
+        sentAmount: 0n,
+        remoteIncomingPaymentUrl: incomingPayment.id,
+        state: OutgoingPaymentState.FUNDED,
+      };
+      await this.outgoingPaymentRepository.store(outgoingPayment);
+
+      const remoteOutgoingPaymentFundedEvent: RemoteOutgoingPaymentFundedEvent =
+        {
+          type: PaymentEventType.REMOTE_OUTGOING_PAYMENT_FUNDED,
+          data: {
+            outgoingPaymentId: outgoingPayment.id,
+            debitAmount: request.debitAmount,
+            remoteIncomingPaymentUrl: outgoingPayment.remoteIncomingPaymentUrl!,
+            ilpDetails: incomingPayment.ilpDetails,
+          },
+        };
+
+      await this.paymentEventProducer.publish([
+        remoteOutgoingPaymentFundedEvent,
+      ]);
+      return outgoingPayment.id;
+    }
   }
 
   private addMicroPaymentToIncomingPayment(
@@ -915,7 +1117,13 @@ export class PaymentService {
   public async handleLocalOutgoingPaymentFundedEvent(
     event: LocalOutgoingPaymentFundedEvent
   ) {
-    const { outgoingPayment, quote, incomingPayment } = event.data;
+    const {
+      outgoingPayment,
+      senderWalletAddressId,
+      debitAmount,
+      receiveAmount,
+      incomingPayment,
+    } = event.data;
 
     const exists = await this.outgoingPaymentRepository.exists(
       outgoingPayment.id
@@ -928,9 +1136,9 @@ export class PaymentService {
       id: crypto.randomUUID(),
       type: LiquidityRequestType.WALLET_ADDRESS_TO_WALLET_ADDRESS,
       data: {
-        walletAddressIdToDebit: quote.senderWalletAddressId,
+        walletAddressIdToDebit: senderWalletAddressId,
         walletAddressIdToCredit: incomingPayment.walletAddressId,
-        amount: quote.debitAmount,
+        amount: debitAmount,
       },
     };
 
@@ -960,7 +1168,7 @@ export class PaymentService {
       incomingPayment,
       {
         requestId: outgoingPayment.id,
-        amount: quote.receiveAmount.value, // TODO: need to send _up to_ to incomingAmount, as the quoted amount might be more
+        amount: receiveAmount.value, // TODO: need to send _up to_ to incomingAmount, as the quoted amount might be more
         method: "LOCAL",
       }
     );
