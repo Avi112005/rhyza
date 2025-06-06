@@ -1,4 +1,9 @@
 import { DomainEventMsg } from "../message";
+import {
+  IncomingPaymentSerialized,
+  OutgoingPaymentSerialized,
+} from "../../payment";
+import { AmountSerialized } from "../../shared";
 
 /**
  * Enumeration representing various topics used in the system.
@@ -12,6 +17,8 @@ import { DomainEventMsg } from "../message";
  */
 export enum Topic {
   "ApiResponseEvents" = "api-response-events",
+  "OutgoingPaymentCreated" = "outgoing-payment-created",
+  "OutgoingPaymentFunded" = "outgoing-payment-funded",
 }
 
 export interface ApiRspEventPayload {
@@ -87,6 +94,54 @@ export class ApiRspErrorEvent extends DomainEventMsg {
   constructor(payload: ApiRspErrorPayload, requestId: string) {
     super();
     this.aggregateId = this.msgKey = requestId;
+    this.payload = payload;
+    this.requestId = requestId;
+  }
+}
+
+export interface LocalOutgoingPaymentCreatedPayload {
+  outgoingPayment: OutgoingPaymentSerialized;
+  incomingPayment: IncomingPaymentSerialized;
+  senderWalletAddressId: string;
+  receiveAmount: AmountSerialized;
+  debitAmount: AmountSerialized;
+}
+
+export class LocalOutgoingPaymentCreatedEvent extends DomainEventMsg {
+  contextName: string = "outgoing-payment-created";
+  aggregateId: string;
+  aggregateName: string = "outgoing-payment-created";
+  msgKey: string;
+  msgTopic: string = Topic.OutgoingPaymentCreated;
+  payload: LocalOutgoingPaymentCreatedPayload;
+
+  constructor(payload: LocalOutgoingPaymentCreatedPayload, requestId: string) {
+    super();
+    this.msgKey = this.aggregateId = payload.incomingPayment.id;
+    this.payload = payload;
+    this.requestId = requestId;
+  }
+}
+
+export interface LocalOutgoingPaymentFundedPayload {
+  outgoingPayment: OutgoingPaymentSerialized;
+  incomingPayment: IncomingPaymentSerialized;
+  senderWalletAddressId: string;
+  receiveAmount: AmountSerialized;
+  debitAmount: AmountSerialized;
+}
+
+export class LocalOutgoingPaymentFundedEvent extends DomainEventMsg {
+  contextName: string = "outgoing-payment-funded";
+  aggregateId: string;
+  aggregateName: string = "outgoing-payment-funded";
+  msgKey: string;
+  msgTopic: string = Topic.OutgoingPaymentCreated;
+  payload: LocalOutgoingPaymentFundedPayload;
+
+  constructor(payload: LocalOutgoingPaymentFundedPayload, requestId: string) {
+    super();
+    this.msgKey = this.aggregateId = payload.incomingPayment.id;
     this.payload = payload;
     this.requestId = requestId;
   }

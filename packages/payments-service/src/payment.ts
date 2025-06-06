@@ -8,7 +8,7 @@ import {
 } from "./liquidity";
 import { IlpPeerServiceAdapter } from "./ilp-peer";
 import { RatesServiceAdapter } from "./rates";
-import { Amount, Asset } from "./shared";
+import { Amount, Asset, serializeAmount } from "./shared";
 import { WalletAddress, WalletAddressServiceAdapter } from "./wallet-address";
 import { Event, EventProducerAdapter } from "./event";
 import { IlpDetails } from "./ilp-connector";
@@ -17,6 +17,12 @@ import {
   RemoteIncomingPaymentServiceAdapter,
 } from "./remote-incoming-payment";
 import type { ITelemetryService } from "telemetry";
+import { IMessageProducer } from "./message-broker/message";
+import {
+  LocalOutgoingPaymentCreatedEvent,
+  LocalOutgoingPaymentFundedEvent,
+} from "./message-broker/event";
+import { randomUUID } from "crypto";
 
 export class WalletAddressNotFoundError extends Error {}
 export class WalletAddressInactiveError extends Error {}
@@ -85,6 +91,45 @@ export interface OutgoingPayment {
   senderWalletAddressId: string;
 }
 
+export interface OutgoingPaymentSerialized {
+  id: string;
+  quoteId?: string;
+  asset: Asset;
+  state: OutgoingPaymentState;
+  sentAmount: string;
+  debitAmount: string;
+  localIncomingPaymentId?: string;
+  remoteIncomingPaymentUrl?: string;
+  senderWalletAddressId: string;
+}
+
+/**
+ * Restores a serialized OutgoingPayment to its original in-memory representation.
+ */
+export function deserializeOutgoingPayment(
+  serialized: OutgoingPaymentSerialized
+): OutgoingPayment {
+  return {
+    ...serialized,
+    sentAmount: BigInt(serialized.sentAmount),
+    debitAmount: BigInt(serialized.debitAmount),
+  };
+}
+
+/**
+ * Prepares an OutgoingPayment for transport or storage by converting it
+ * to a JSON-serializable form.
+ */
+export function serializeOutgoingPayment(
+  payment: OutgoingPayment
+): OutgoingPaymentSerialized {
+  return {
+    ...payment,
+    sentAmount: payment.sentAmount.toString(),
+    debitAmount: payment.debitAmount.toString(),
+  };
+}
+
 export type OutgoingPaymentWithMicroPayments = OutgoingPayment & {
   microPayments: MicroPayment[];
 };
@@ -126,6 +171,7 @@ export interface IOutgoingPaymentRepository {
     outgoingPayment: OutgoingPayment,
     request: OutgoingPaymentWithNewMicroPaymentUpdate
   ): Promise<void>;
+  markAsFunded(paymentId: string): Promise<void>;
 }
 
 export enum PaymentEventType {
@@ -133,6 +179,7 @@ export enum PaymentEventType {
   INCOMING_PAYMENT_COMPLETED = "INCOMING_PAYMENT_COMPLETED",
   OUTGOING_PAYMENT_COMPLETED = "OUTGOING_PAYMENT_COMPLETED",
   REMOTE_OUTGOING_PAYMENT_FUNDED = "REMOTE_OUTGOING_PAYMENT_FUNDED",
+  LOCAL_OUTGOING_PAYMENT_CREATED = "LOCAL_OUTGOING_PAYMENT_CREATED",
   LOCAL_OUTGOING_PAYMENT_FUNDED = "LOCAL_OUTGOING_PAYMENT_FUNDED",
   REMOTE_QUOTE_REQUESTED = "REMOTE_QUOTE_REQUESTED",
   ILP_PAYMENT_PREPARE_PACKET_ACCEPTED = "ILP_PAYMENT_PREPARE_PACKET_ACCEPTED",
@@ -172,17 +219,6 @@ interface OutgoingPaymentCompletedEvent extends Event {
   type: PaymentEventType.OUTGOING_PAYMENT_COMPLETED;
   data: {
     outgoingPayment: OutgoingPayment;
-  };
-}
-
-interface LocalOutgoingPaymentFundedEvent extends Event {
-  type: PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED;
-  data: {
-    outgoingPayment: OutgoingPayment;
-    incomingPayment: IncomingPayment;
-    senderWalletAddressId: string;
-    receiveAmount: Amount;
-    debitAmount: Amount;
   };
 }
 
@@ -246,18 +282,57 @@ export const LocalIncomingPaymentState = {
 } as const;
 export type LocalIncomingPaymentState = keyof typeof LocalIncomingPaymentState;
 
-interface BaseIncomingPayment {
+export interface IncomingPayment {
+  id: string;
+  state: LocalIncomingPaymentState;
+  walletAddressId: string;
+  type: "LOCAL";
   expiresAt: Date;
   asset: Asset;
   incomingAmount?: bigint;
   receivedAmount: bigint;
 }
 
-export interface IncomingPayment extends BaseIncomingPayment {
+export interface IncomingPaymentSerialized {
   id: string;
   state: LocalIncomingPaymentState;
   walletAddressId: string;
   type: "LOCAL";
+  expiresAt: string;
+  asset: Asset;
+  incomingAmount?: string;
+  receivedAmount: string;
+}
+
+/**
+ * Prepares an IncomingPayment for transport or storage by converting it
+ * to a JSON-serializable form.
+ */
+export function serializeIncomingPayment(
+  payment: IncomingPayment
+): IncomingPaymentSerialized {
+  return {
+    ...payment,
+    receivedAmount: payment.receivedAmount.toString(),
+    incomingAmount: payment.incomingAmount?.toString(),
+    expiresAt: payment.expiresAt.toISOString(),
+  };
+}
+
+/**
+ * Restores a serialized IncomingPayment to its original in-memory representation.
+ */
+export function deserializeIncomingPayment(
+  serialized: IncomingPaymentSerialized
+): IncomingPayment {
+  return {
+    ...serialized,
+    receivedAmount: BigInt(serialized.receivedAmount),
+    incomingAmount: serialized.incomingAmount
+      ? BigInt(serialized.incomingAmount)
+      : undefined,
+    expiresAt: new Date(serialized.expiresAt),
+  };
 }
 
 export type IncomingPaymentWithMicroPayments = IncomingPayment & {
@@ -285,6 +360,22 @@ export interface CreateOutgoingPaymentFromIncomingPaymentRequest {
   senderWalletAddressId: string;
   debitAmount: Amount;
 }
+
+export interface HandleLocalOutgoingPaymentCreatedEventRequest {
+  outgoingPayment: OutgoingPayment;
+  incomingPayment: IncomingPayment;
+  senderWalletAddressId: string;
+  receiveAmount: Amount;
+  debitAmount: Amount;
+}
+
+export interface HandleLocalOutgoingPaymentFundedEventRequest {
+  outgoingPayment: OutgoingPayment;
+  incomingPayment: IncomingPayment;
+  senderWalletAddressId: string;
+  receiveAmount: Amount;
+  debitAmount: Amount;
+}
 export class PaymentService {
   private INCOMING_PAYMENT_MAX_EXPIRY_MS = 2592000000; // 30 days
   private INCOMING_PAYMENT_DEFAULT_EXPIRY = 1000 * 60 * 10;
@@ -300,6 +391,7 @@ export class PaymentService {
     private outgoingPaymentRepository: IOutgoingPaymentRepository,
     private quoteRepository: IQuoteRepository,
     private paymentEventProducer: EventProducerAdapter,
+    private messageProducer: IMessageProducer,
     private telemetryService: ITelemetryService
   ) {}
 
@@ -813,17 +905,6 @@ export class PaymentService {
         throw new IncomingPaymentInvalidStateError();
       }
 
-      const walletAddressFundRequest: WalletAddressDepositLiquidityRequest = {
-        id: crypto.randomUUID(),
-        type: LiquidityRequestType.DEPOSIT_WALLET_ADDRESS,
-        data: {
-          walletAddressId: quote.senderWalletAddressId,
-          amount: quote.debitAmount,
-        },
-      };
-
-      await this.liquidityService.execute([walletAddressFundRequest]);
-
       const outgoingPayment: OutgoingPayment = {
         id: outgoingPaymentId,
         quoteId: quote.id,
@@ -835,25 +916,22 @@ export class PaymentService {
         debitAmount: quote.debitAmount.value,
         sentAmount: 0n,
         localIncomingPaymentId: incomingPayment.id,
-        state: OutgoingPaymentState.FUNDED, // TODO: check if the outgoing payment request came from third party, and webhook out to ASE instead of marking as FUNDED directly
-      };
-
-      const localOutgoingPaymentFundedEvent: LocalOutgoingPaymentFundedEvent = {
-        type: PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED,
-        data: {
-          outgoingPayment,
-          incomingPayment,
-          senderWalletAddressId: quote.senderWalletAddressId,
-          receiveAmount: quote.receiveAmount,
-          debitAmount: quote.debitAmount,
-        },
+        state: OutgoingPaymentState.CREATED,
       };
 
       await this.outgoingPaymentRepository.store(outgoingPayment);
-      await this.paymentEventProducer.publish([
-        localOutgoingPaymentFundedEvent,
-      ]);
-
+      await this.messageProducer.send(
+        new LocalOutgoingPaymentCreatedEvent(
+          {
+            outgoingPayment: serializeOutgoingPayment(outgoingPayment),
+            incomingPayment: serializeIncomingPayment(incomingPayment),
+            senderWalletAddressId: quote.senderWalletAddressId,
+            receiveAmount: serializeAmount(quote.receiveAmount),
+            debitAmount: serializeAmount(quote.debitAmount),
+          },
+          randomUUID()
+        )
+      );
       return outgoingPayment.id;
     }
 
@@ -973,17 +1051,6 @@ export class PaymentService {
         throw new InvalidAmountError();
       }
 
-      const walletAddressFundRequest: WalletAddressDepositLiquidityRequest = {
-        id: crypto.randomUUID(),
-        type: LiquidityRequestType.DEPOSIT_WALLET_ADDRESS,
-        data: {
-          walletAddressId: walletAddress.id,
-          amount: debitAmount,
-        },
-      };
-
-      await this.liquidityService.execute([walletAddressFundRequest]);
-
       const outgoingPayment: OutgoingPayment = {
         id: outgoingPaymentId,
         senderWalletAddressId: walletAddress.id,
@@ -994,24 +1061,22 @@ export class PaymentService {
         debitAmount: debitAmount.value,
         sentAmount: 0n,
         localIncomingPaymentId: incomingPayment.id,
-        state: OutgoingPaymentState.FUNDED,
-      };
-
-      const localOutgoingPaymentFundedEvent: LocalOutgoingPaymentFundedEvent = {
-        type: PaymentEventType.LOCAL_OUTGOING_PAYMENT_FUNDED,
-        data: {
-          outgoingPayment,
-          incomingPayment,
-          senderWalletAddressId: walletAddress.id,
-          receiveAmount,
-          debitAmount,
-        },
+        state: OutgoingPaymentState.CREATED,
       };
 
       await this.outgoingPaymentRepository.store(outgoingPayment);
-      await this.paymentEventProducer.publish([
-        localOutgoingPaymentFundedEvent,
-      ]);
+      await this.messageProducer.send(
+        new LocalOutgoingPaymentCreatedEvent(
+          {
+            outgoingPayment: serializeOutgoingPayment(outgoingPayment),
+            incomingPayment: serializeIncomingPayment(incomingPayment),
+            senderWalletAddressId: walletAddress.id,
+            receiveAmount: serializeAmount(receiveAmount),
+            debitAmount: serializeAmount(debitAmount),
+          },
+          randomUUID()
+        )
+      );
 
       return outgoingPayment.id;
     } else {
@@ -1112,10 +1177,52 @@ export class PaymentService {
     return update;
   }
 
-  // We can decide whether we want to keep this event or not, or just complete the outgoing payment synchronously in the payment handler,
-  // in order to save one call to the liquidity service (we can fund the wallet address and make the wallet to wallet transfer directly in a single request)
+  public async handleLocalOutgoingPaymentCreatedEvent(
+    request: HandleLocalOutgoingPaymentCreatedEventRequest
+  ) {
+    const {
+      outgoingPayment,
+      incomingPayment,
+      senderWalletAddressId,
+      debitAmount,
+      receiveAmount,
+    } = request;
+    const walletAddressFundRequest: WalletAddressDepositLiquidityRequest = {
+      id: crypto.randomUUID(),
+      type: LiquidityRequestType.DEPOSIT_WALLET_ADDRESS,
+      data: {
+        walletAddressId: senderWalletAddressId,
+        amount: debitAmount,
+      },
+    };
+
+    await this.liquidityService.execute([walletAddressFundRequest]);
+
+    await this.outgoingPaymentRepository.markAsFunded(outgoingPayment.id);
+
+    const fundedOutgoingPayment =
+      await this.outgoingPaymentRepository.fetchById(outgoingPayment.id);
+
+    if (!fundedOutgoingPayment) {
+      throw new OutgoingPaymentNotFoundError();
+    }
+
+    await this.messageProducer.send(
+      new LocalOutgoingPaymentFundedEvent(
+        {
+          outgoingPayment: serializeOutgoingPayment(fundedOutgoingPayment),
+          incomingPayment: serializeIncomingPayment(incomingPayment),
+          senderWalletAddressId: senderWalletAddressId,
+          receiveAmount: serializeAmount(receiveAmount),
+          debitAmount: serializeAmount(debitAmount),
+        },
+        randomUUID()
+      )
+    );
+  }
+
   public async handleLocalOutgoingPaymentFundedEvent(
-    event: LocalOutgoingPaymentFundedEvent
+    request: HandleLocalOutgoingPaymentFundedEventRequest
   ) {
     const {
       outgoingPayment,
@@ -1123,7 +1230,7 @@ export class PaymentService {
       debitAmount,
       receiveAmount,
       incomingPayment,
-    } = event.data;
+    } = request;
 
     const exists = await this.outgoingPaymentRepository.exists(
       outgoingPayment.id
