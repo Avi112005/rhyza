@@ -3,20 +3,15 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "sourceMap": true,
     "lib": ["es2023"],
     "target": "es2023",
     "module": "NodeNext"
   },
   "references": [
-    {
-      "path": "./packages/api"
-    },
-    {
-      "path": "./packages/payments-service"
-    },
-    {
-      "path": "./packages/telemetry"
-    }
+    { "path": "./packages/common-types-lib" },
+    { "path": "./packages/payments-domain-lib" },
+    { "path": "./packages/implementations-lib" }
   ],
   "files": [],
   "include": []
