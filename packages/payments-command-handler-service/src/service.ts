@@ -4,7 +4,8 @@ import {
 } from 'implementations-lib';
 import {
   MongoDbPaymentIntentRepo,
-  PalWalletAddressAdapter
+  PalWalletAddressAdapter,
+  StaticRatesAdapter
 } from 'payments-implementations-lib';
 import { PaymentIntentAggregate } from 'payments-domain-lib';
 import { PalClient } from 'pal-client-lib';
@@ -34,11 +35,14 @@ export class PaymentsCommandHandlerService {
     await this.repo.init();
 
     const palClient = new PalClient(PAL_GRPC_URL);
+
     const walletAddressAdapter = new PalWalletAddressAdapter(palClient);
+    const staticRatesAdapter = new StaticRatesAdapter();
 
     const aggregate = new PaymentIntentAggregate(
       this.repo,
-      walletAddressAdapter
+      walletAddressAdapter,
+      staticRatesAdapter
     );
 
     this.msgProducer = new RafikiKafkaJsonProducer({
