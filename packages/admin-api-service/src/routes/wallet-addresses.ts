@@ -1,7 +1,7 @@
 'use strict';
 
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
-import { PalClient } from 'pal-client-lib';
+import { PalClient, parseAddressToDomainAndPathName } from 'pal-client-lib';
 
 interface WalletAddressRouteOptions extends FastifyPluginOptions {
   palClient: PalClient;
@@ -23,10 +23,13 @@ export async function walletAddressRoutes(
   }>('/wallet-addresses', async (request, reply) => {
     const { address, publicName, assetCode, isActive } = request.body;
 
+    const { domain, pathName } = parseAddressToDomainAndPathName(address);
+
     let result;
     try {
       result = await palClient.createWalletAddress(
-        address,
+        domain,
+        pathName,
         publicName,
         assetCode,
         isActive
@@ -45,7 +48,9 @@ export async function walletAddressRoutes(
     }
 
     return reply.status(201).send({
-      address: result.address
+      address: result.domain
+        ? `${result.domain}/${result.pathName}`
+        : result.pathName
     });
   });
 }
