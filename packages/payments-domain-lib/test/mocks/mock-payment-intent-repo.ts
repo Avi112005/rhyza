@@ -12,7 +12,7 @@ export class MockPaymentIntentRepo implements IPaymentIntentRepository {
     }
   }
 
-  async fetchByIds(ids: string[]): Promise<IPaymentIntent[]> {
+  async fetchByIdsWithPayments(ids: string[]): Promise<IPaymentIntent[]> {
     const results: IPaymentIntent[] = [];
     for (const id of ids) {
       const p = this._store.get(id);
@@ -25,6 +25,14 @@ export class MockPaymentIntentRepo implements IPaymentIntentRepository {
     quoteUpdates: { quoteIds: string[]; paymentIntent: IPaymentIntent }[]
   ): Promise<void> {
     for (const update of quoteUpdates) {
+      this._store.set(update.paymentIntent.id, update.paymentIntent);
+    }
+  }
+
+  async storePayments(
+    paymentUpdate: { paymentIds: string[]; paymentIntent: IPaymentIntent }[]
+  ): Promise<void> {
+    for (const update of paymentUpdate) {
       this._store.set(update.paymentIntent.id, update.paymentIntent);
     }
   }

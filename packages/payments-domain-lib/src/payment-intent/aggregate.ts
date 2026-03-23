@@ -8,7 +8,11 @@ import {
   WalletAddress
 } from './interfaces';
 import { PaymentIntent } from './entity';
-import { CreatePaymentIntentCmd, CreateQuoteCmd } from '../commands';
+import {
+  CreatePaymentIntentCmd,
+  CreateQuoteCmd,
+  CreatePaymentCmd
+} from '../commands';
 import {
   CannotCreateDuplicatePaymentIntentError,
   WalletAddressNotFoundError,
@@ -18,15 +22,18 @@ import {
   RatesError
 } from './errors';
 import {
+  QuoteCompletedEvent,
+  QuoteCreateFailedEvent,
+  PaymentCreatedEvent,
   PaymentIntentCreatedEvent,
   PaymentIntentCreateFailedEvent,
-  QuoteCompletedEvent,
-  QuoteCreateFailedEvent
+  PaymentCreateFailedEvent
 } from './events';
 
 export class PaymentIntentAggregate {
   private newPaymentIntentIds: string[] = [];
   private newPaymentIntentQuotes = new Map<string, string[]>(); // paymentIntentId, quoteIds
+  private newPaymentsMap = new Map<string, string[]>(); // paymentIntentId, paymentIds
   private paymentIntentMap = new Map<string, IPaymentIntent>();
   private walletAddressMap = new Map<string, WalletAddress>();
 
@@ -51,12 +58,16 @@ export class PaymentIntentAggregate {
         const payload = (cmd as CreateQuoteCmd).payload;
         paymentIntentIdsSet.add(payload.paymentIntentId);
         walletAddressIdSet.add(payload.senderWalletAddressId);
+      } else if (cmd.msgName === CreatePaymentCmd.name) {
+        const payload = (cmd as CreatePaymentCmd).payload;
+        walletAddressIdSet.add(payload.senderWalletAddressId);
+        paymentIntentIdsSet.add(payload.paymentIntentId);
       }
     }
 
     const [walletAddresses, existingPaymentIntents] = await Promise.all([
       this._walletAddressService.fetchByIds([...walletAddressIdSet]),
-      this._repo.fetchByIds([...paymentIntentIdsSet])
+      this._repo.fetchByIdsWithPayments([...paymentIntentIdsSet])
     ]);
 
     for (const walletAddress of walletAddresses) {
@@ -75,6 +86,8 @@ export class PaymentIntentAggregate {
         );
       } else if (cmd.msgName === CreateQuoteCmd.name) {
         event = await this.handleCreateQuoteCommand(cmd as CreateQuoteCmd);
+      } else if (cmd.msgName === CreatePaymentCmd.name) {
+        event = await this.handleCreatePaymentCommand(cmd as CreatePaymentCmd);
       } else {
         throw new Error('Unexpected command');
       }
@@ -240,6 +253,88 @@ export class PaymentIntentAggregate {
     }
   }
 
+  private async handleCreatePaymentCommand(cmd: CreatePaymentCmd) {
+    const {
+      id,
+      senderWalletAddressId,
+      senderWalletAddress,
+      paymentIntentId,
+      quoteId,
+      debitAmount
+    } = cmd.payload;
+
+    try {
+      const walletAddress = this.walletAddressMap.get(senderWalletAddressId);
+      if (!walletAddress) {
+        throw new WalletAddressNotFoundError(
+          `Wallet address ${senderWalletAddressId} not found`
+        );
+      }
+      if (!walletAddress.isActive) {
+        throw new WalletAddressInactiveError(
+          `Wallet address ${senderWalletAddressId} is not active`
+        );
+      }
+
+      const paymentIntentObj = this.paymentIntentMap.get(paymentIntentId);
+      if (!paymentIntentObj) {
+        throw new PaymentIntentNotFoundError(
+          `Payment intent ${paymentIntentId} not found`
+        );
+      }
+
+      const paymentIntent = PaymentIntent.fromObject(paymentIntentObj);
+
+      if (paymentIntent.destination !== 'LOCAL') {
+        throw new PaymentIntentInvalidState(
+          'Payment intent destination must be local'
+        );
+      }
+
+      const exchangeRate = await this._ratesService.getRate(
+        walletAddress.assetCode,
+        paymentIntent.assetCode
+      );
+
+      if (!exchangeRate) {
+        throw new RatesError('Could not get rates during quoting');
+      }
+
+      paymentIntent.addLocalPayment({
+        id,
+        senderWalletAddress: {
+          id: senderWalletAddressId,
+          address: senderWalletAddress,
+          assetScale: walletAddress.assetScale,
+          assetCode: walletAddress.assetCode
+        },
+        exchangeRate,
+        quoteId,
+        debitAmount: debitAmount ? BigInt(debitAmount) : undefined
+      });
+
+      this.paymentIntentMap.set(paymentIntent.id, paymentIntent.toObject());
+
+      if (!this.newPaymentsMap.has(paymentIntent.id)) {
+        this.newPaymentsMap.set(paymentIntent.id, []);
+      }
+
+      this.newPaymentsMap.get(paymentIntent.id)?.push(id);
+
+      return new PaymentCreatedEvent({ id }, cmd.requestId);
+    } catch (err) {
+      const event = new PaymentCreateFailedEvent(
+        {
+          errorName: (err as Error).constructor.name,
+          message: (err as Error).message
+        },
+        cmd.requestId
+      );
+
+      return event;
+    }
+  }
+
   public async flush() {
     const promises = [];
 
@@ -249,7 +344,7 @@ export class PaymentIntentAggregate {
         const paymentIntent = this.paymentIntentMap.get(id);
         if (!paymentIntent) {
           console.error(
-            `Payment intent ${id} missing from paymentIntentMap during flush`
+            `Payment intent ${id} missing from paymentIntentMap during flush (payment intents)`
           );
           continue;
         }
@@ -272,7 +367,7 @@ export class PaymentIntentAggregate {
         const paymentIntent = this.paymentIntentMap.get(paymentIntentId);
         if (!paymentIntent) {
           console.error(
-            `Payment intent ${paymentIntentId} missing from paymentIntentMap during flush`
+            `Payment intent ${paymentIntentId} missing from paymentIntentMap during flush (quotes)`
           );
           continue;
         }
@@ -283,12 +378,36 @@ export class PaymentIntentAggregate {
       promises.push(this._repo.storeQuotes(updates));
     }
 
+    if (this.newPaymentsMap.size > 0) {
+      const updates: {
+        paymentIntent: IPaymentIntent;
+        paymentIds: string[];
+      }[] = [];
+      for (const [
+        paymentIntentId,
+        paymentIds
+      ] of this.newPaymentsMap.entries()) {
+        const paymentIntent = this.paymentIntentMap.get(paymentIntentId);
+        if (!paymentIntent) {
+          console.error(
+            `Payment intent ${paymentIntentId} missing from paymentIntentMap during flush (payments)`
+          );
+          continue;
+        }
+
+        updates.push({ paymentIntent, paymentIds });
+      }
+
+      promises.push(this._repo.storePayments(updates));
+    }
+
     // TODO handle gracefully
     try {
       await Promise.all(promises);
     } finally {
       this.paymentIntentMap.clear();
-      this.walletAddressMap.clear();
+      this.walletAddressMap.clear(); // TODO: wallet addresses are OK to be cached
+      this.newPaymentsMap.clear();
       this.newPaymentIntentQuotes.clear();
       this.newPaymentIntentIds = [];
     }

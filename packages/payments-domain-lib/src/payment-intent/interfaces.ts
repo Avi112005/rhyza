@@ -18,17 +18,47 @@ export const QuoteState = {
 } as const;
 export type QuoteState = keyof typeof QuoteState;
 
-export interface IQuote {
+interface BaseQuote {
   id: string;
   state: QuoteState;
   senderWalletAddress: string;
   senderWalletAddressId: string;
+}
 
-  // The amounts might be defined only after getting the ILP quote
-  expiresAt?: Date;
-  debitAmount?: bigint;
-  receiveAmount?: bigint;
-  exchangeRate?: number;
+interface PendingQuote extends BaseQuote {
+  state: 'PENDING';
+  senderWalletAddress: string;
+  senderWalletAddressId: string;
+}
+
+interface CompletedQuote extends BaseQuote {
+  state: 'COMPLETED';
+  expiresAt: Date;
+  debitAmount: bigint;
+  receiveAmount: bigint;
+  exchangeRate: number;
+}
+
+export type IQuote = PendingQuote | CompletedQuote;
+
+export const PaymentState = {
+  CREATED: 'CREATED',
+  COMPLETED: 'COMPLETED'
+} as const;
+export type PaymentState = keyof typeof PaymentState;
+
+export interface IPayment {
+  id: string;
+  state: PaymentState;
+  senderWalletAddress: string;
+  senderWalletAddressId: string;
+  paymentIntentId: string;
+  assetCode: string;
+  assetScale: number;
+  quoteId?: string;
+  debitAmount: bigint;
+  receiveAmount: bigint;
+  sentAmount: bigint;
 }
 
 export interface IPaymentIntent {
@@ -43,6 +73,7 @@ export interface IPaymentIntent {
   incomingAmount: bigint | null;
   receivedAmount: bigint;
   quotes: IQuote[];
+  payments: IPayment[];
 }
 
 export interface WalletAddress {
@@ -65,8 +96,11 @@ export interface IRatesService {
 
 export interface IPaymentIntentRepository {
   storeMany(paymentIntents: IPaymentIntent[]): Promise<void>;
-  fetchByIds(ids: string[]): Promise<IPaymentIntent[]>;
+  fetchByIdsWithPayments(ids: string[]): Promise<IPaymentIntent[]>;
   storeQuotes(
     quoteUpdate: { quoteIds: string[]; paymentIntent: IPaymentIntent }[]
+  ): Promise<void>;
+  storePayments(
+    paymentUpdate: { paymentIds: string[]; paymentIntent: IPaymentIntent }[]
   ): Promise<void>;
 }
