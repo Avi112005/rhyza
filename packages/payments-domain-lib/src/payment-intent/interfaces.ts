@@ -1,7 +1,5 @@
 export const PaymentIntentState = {
   CREATED: 'CREATED',
-  PARTIALLY_PAID: 'PARTIALLY_PAID',
-  EXPIRED: 'EXPIRED',
   COMPLETED: 'COMPLETED'
 } as const;
 export type PaymentIntentState = keyof typeof PaymentIntentState;
@@ -27,8 +25,6 @@ interface BaseQuote {
 
 interface PendingQuote extends BaseQuote {
   state: 'PENDING';
-  senderWalletAddress: string;
-  senderWalletAddressId: string;
 }
 
 interface CompletedQuote extends BaseQuote {
@@ -98,9 +94,19 @@ export interface IPaymentIntentRepository {
   storeMany(paymentIntents: IPaymentIntent[]): Promise<void>;
   fetchByIdsWithPayments(ids: string[]): Promise<IPaymentIntent[]>;
   storeQuotes(
-    quoteUpdate: { quoteIds: string[]; paymentIntent: IPaymentIntent }[]
+    quoteUpdates: { quoteIds: string[]; paymentIntent: IPaymentIntent }[]
   ): Promise<void>;
   storePayments(
-    paymentUpdate: { paymentIds: string[]; paymentIntent: IPaymentIntent }[]
+    paymentUpdates: { paymentIds: string[]; paymentIntent: IPaymentIntent }[]
+  ): Promise<void>;
+  storeCompletedLocalPayments(
+    paymentUpdates: {
+      paymentIntent: {
+        id: string;
+        receivedAmount: bigint;
+        state: PaymentIntentState;
+      };
+      payments: { id: string; state: PaymentState; sentAmount: bigint }[];
+    }[]
   ): Promise<void>;
 }

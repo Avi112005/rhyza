@@ -2,7 +2,9 @@ import { Collection, CollectionInfo, Db, MongoClient } from 'mongodb';
 import {
   IPayment,
   IPaymentIntent,
-  IPaymentIntentRepository
+  IPaymentIntentRepository,
+  PaymentIntentState,
+  PaymentState
 } from 'payments-domain-lib';
 
 const DB_NAME = 'payments';
@@ -270,6 +272,61 @@ export class MongoDbPaymentIntentRepo implements IPaymentIntentRepository {
 
     try {
       await this._paymentCollection.insertMany(newPaymentEntities);
+    } catch (e) {
+      console.error(e);
+      throw new Error(
+        `Unable to store payments - error: ${(e as Error).message}`
+      );
+    }
+  }
+
+  async storeCompletedLocalPayments(
+    paymentUpdates: {
+      paymentIntent: {
+        id: string;
+        receivedAmount: bigint;
+        state: PaymentIntentState;
+      };
+      payments: { id: string; state: PaymentState; sentAmount: bigint }[];
+    }[]
+  ): Promise<void> {
+    this._checkInitialisedOrThrow();
+
+    if (paymentUpdates.length === 0) return;
+
+    try {
+      const intentWrites = paymentUpdates.map((update) => ({
+        updateOne: {
+          filter: { id: update.paymentIntent.id },
+          update: {
+            $set: {
+              state: update.paymentIntent.state,
+              receivedAmount: update.paymentIntent.receivedAmount
+            }
+          }
+        }
+      }));
+
+      const paymentWrites = paymentUpdates.flatMap((update) =>
+        update.payments
+          .filter((p) => update.payments.map((p) => p.id).includes(p.id))
+          .map((payment) => ({
+            updateOne: {
+              filter: { id: payment.id },
+              update: {
+                $set: {
+                  state: payment.state,
+                  sentAmount: payment.sentAmount
+                }
+              }
+            }
+          }))
+      );
+
+      await Promise.all([
+        this._paymentIntentCollection.bulkWrite(intentWrites),
+        this._paymentCollection.bulkWrite(paymentWrites)
+      ]);
     } catch (e) {
       console.error(e);
       throw new Error(
