@@ -29,8 +29,8 @@ import { CreateQuoteCmd } from '../../src/commands';
 import { IPaymentIntent } from '../../src/payment-intent/interfaces';
 import { ApprovePaymentCmd } from '../../src/commands';
 import {
-  LocalPaymentCompletedEvent,
-  LocalPaymentCompleteFailedEvent,
+  PaymentCompletedEvent,
+  PaymentCompleteFailedEvent,
   RemoteQuoteRequestedEvent
 } from '../../src/payment-intent/events';
 
@@ -151,6 +151,7 @@ describe('PaymentIntentAggregate.handleBatch', () => {
   ): IPaymentIntent {
     return {
       id: crypto.randomUUID(),
+      createdAt: new Date(),
       receivedAmount: 0n,
       receiverWalletAddress: 'remote.domain.com/alice',
       assetCode: 'USD',
@@ -299,7 +300,8 @@ describe('PaymentIntentAggregate.handleBatch', () => {
           expiresAt: new Date(Date.now() + 1000),
           incomingAmount: null,
           quotes: [],
-          payments: []
+          payments: [],
+          createdAt: new Date()
         };
         await repo.storeMany([paymentIntent]);
 
@@ -330,7 +332,8 @@ describe('PaymentIntentAggregate.handleBatch', () => {
           expiresAt: new Date(Date.now() + 1000),
           incomingAmount: null,
           quotes: [],
-          payments: []
+          payments: [],
+          createdAt: new Date()
         };
         await repo.storeMany([paymentIntent]);
 
@@ -360,7 +363,8 @@ describe('PaymentIntentAggregate.handleBatch', () => {
           incomingAmount: null,
           quotes: [],
           payments: [],
-          destinationIlpAddress: 'g.peer.123'
+          destinationIlpAddress: 'g.peer.123',
+          createdAt: new Date()
         };
         await repo.storeMany([paymentIntent]);
 
@@ -401,7 +405,8 @@ describe('PaymentIntentAggregate.handleBatch', () => {
           expiresAt: new Date(Date.now() + 60_000),
           incomingAmount: null,
           quotes: [],
-          payments: []
+          payments: [],
+          createdAt: new Date()
         };
         await repo.storeMany([paymentIntent]);
 
@@ -709,7 +714,8 @@ describe('PaymentIntentAggregate.handleBatch', () => {
           quotes: [],
           payments: [],
           destinationIlpAddress: 'g.peer.123',
-          remoteUrl: REMOTE_URL
+          remoteUrl: REMOTE_URL,
+          createdAt: new Date()
         };
         await repo.storeMany([existingPaymentIntent]);
 
@@ -800,7 +806,8 @@ describe('PaymentIntentAggregate.handleBatch', () => {
           expiresAt: new Date(Date.now() + 1000),
           incomingAmount: null,
           quotes: [],
-          payments: []
+          payments: [],
+          createdAt: new Date()
         };
         await repo.storeMany([paymentIntent]);
 
@@ -831,7 +838,8 @@ describe('PaymentIntentAggregate.handleBatch', () => {
           expiresAt: new Date(Date.now() + 1000),
           incomingAmount: null,
           quotes: [],
-          payments: []
+          payments: [],
+          createdAt: new Date()
         };
         await repo.storeMany([paymentIntent]);
 
@@ -857,8 +865,8 @@ describe('PaymentIntentAggregate.handleBatch', () => {
         const { events } = await aggregate.handleBatch([cmd]);
 
         assert.equal(events.length, 1);
-        assert.equal(events[0].msgName, LocalPaymentCompleteFailedEvent.name);
-        const payload = (events[0] as LocalPaymentCompleteFailedEvent).payload;
+        assert.equal(events[0].msgName, PaymentCompleteFailedEvent.name);
+        const payload = (events[0] as PaymentCompleteFailedEvent).payload;
         assert.equal(payload.errorName, 'PaymentIntentNotFoundError');
       });
 
@@ -890,7 +898,8 @@ describe('PaymentIntentAggregate.handleBatch', () => {
               createdAt: new Date(),
               debitAmount: 100n,
               receiveAmount: 100n,
-              sentAmount: 0n
+              sentAmount: 0n,
+              createdAt: new Date()
             }
           ]
         };
@@ -903,9 +912,9 @@ describe('PaymentIntentAggregate.handleBatch', () => {
         const { events } = await aggregate.handleBatch([cmd]);
 
         assert.equal(events.length, 1);
-        assert.equal(events[0].msgName, LocalPaymentCompletedEvent.name);
+        assert.equal(events[0].msgName, PaymentCompletedEvent.name);
         assert.equal(
-          (events[0] as LocalPaymentCompletedEvent).payload.id,
+          (events[0] as PaymentCompletedEvent).payload.id,
           paymentId
         );
       });
