@@ -45,6 +45,7 @@ import {
   PaymentCompleteFailedEvent,
   PaymentCreatedEvent,
   RemoteQuoteRequestedEvent,
+  PaymentIntentCompletedEvent,
   PaymentCancelFailedEvent,
   PaymentCancelledEvent
 } from './events';
@@ -182,7 +183,7 @@ export class PaymentIntentAggregate {
     ]);
 
     for (const cmd of cmds) {
-      let event: IMessage;
+      let event: IMessage | IMessage[];
       if (cmd.msgName === CreatePaymentIntentCmd.name) {
         event = this.handleCreatePaymentIntentCommand(
           cmd as CreatePaymentIntentCmd
@@ -206,8 +207,8 @@ export class PaymentIntentAggregate {
       } else {
         throw new Error('Unexpected command');
       }
-
-      outputEvents.push(event);
+      const events = Array.isArray(event) ? event : [event];
+      outputEvents.push(...events);
     }
 
     return { events: outputEvents };
@@ -740,23 +741,45 @@ export class PaymentIntentAggregate {
         paymentIntent.id,
         paymentId
       );
-      return new PaymentCompletedEvent(
-        {
-          id: payment.id,
-          paymentIntentId: payment.paymentIntentId,
-          senderWalletAddress: payment.senderWalletAddress,
-          debitAmount: String(payment.debitAmount),
-          receiveAmount: String(payment.receiveAmount),
-          sentAmount: String(payment.sentAmount),
-          state: payment.state,
-          createdAt: payment.createdAt,
-          assetCode: payment.assetCode,
-          assetScale: payment.assetScale,
-          receiveAssetCode: paymentIntent.assetCode,
-          receiveAssetScale: paymentIntent.assetScale
-        },
-        cmd.requestId
+
+      const events = [];
+      if (paymentIntent.state === 'COMPLETED') {
+        events.push(
+          new PaymentIntentCompletedEvent(
+            {
+              id: paymentIntent.id,
+              createdAt: paymentIntent.createdAt,
+              expiresAt: paymentIntent.expiresAt,
+              receivedAmount: String(paymentIntent.receivedAmount),
+              incomingAmount: String(paymentIntent.incomingAmount),
+              state: paymentIntent.state,
+              assetCode: paymentIntent.assetCode,
+              assetScale: paymentIntent.assetScale
+            },
+            cmd.requestId
+          )
+        );
+      }
+      events.push(
+        new PaymentCompletedEvent(
+          {
+            id: payment.id,
+            paymentIntentId: payment.paymentIntentId,
+            senderWalletAddress: payment.senderWalletAddress,
+            debitAmount: String(payment.debitAmount),
+            receiveAmount: String(payment.receiveAmount),
+            sentAmount: String(payment.sentAmount),
+            state: payment.state,
+            createdAt: payment.createdAt,
+            assetCode: payment.assetCode,
+            assetScale: payment.assetScale,
+            receiveAssetCode: paymentIntent.assetCode,
+            receiveAssetScale: paymentIntent.assetScale
+          },
+          cmd.requestId
+        )
       );
+      return events;
     } catch (err) {
       return new PaymentCompleteFailedEvent(
         {
