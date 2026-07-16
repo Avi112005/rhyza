@@ -107,6 +107,8 @@ export class PaymentIntentAggregate {
   private remotePaymentIntentFetchErrors = new Map<string, Error>();
   private peerMap = new Map<string, IPeer | null>(); // ilpAddress, peer
   private peerFetchErrors = new Map<string, Error>(); // ilpAddress, error
+  private peersById = new Map<string, IPeer | null>(); // peerId, peer
+  private peerByIdFetchErrors = new Map<string, Error>(); // peerId, error
   private fxRateMap = new Map<string, number | null>(); // fxKey, rate
   private fxRateFetchErrors = new Map<string, Error>(); // fxKey, error
 
@@ -213,6 +215,27 @@ export class PaymentIntentAggregate {
 
     // second prefetch pass: peers + FX rates. Must come after all intent
     // prefetching (local read, remote import)
+
+    // Resolve inbound peers by id first
+    const peerIdsToFetch = new Set<string>();
+    for (const cmd of cmds) {
+      if (cmd.msgName === CalculateRemoteQuoteCmd.name) {
+        peerIdsToFetch.add((cmd as CalculateRemoteQuoteCmd).payload.peerId);
+      }
+    }
+    await Promise.all(
+      Array.from(peerIdsToFetch, async (peerId) => {
+        try {
+          this.peersById.set(
+            peerId,
+            await this._palService.getPeerById(peerId)
+          );
+        } catch (err) {
+          this.peerByIdFetchErrors.set(peerId, err as Error);
+        }
+      })
+    );
+
     const ilpAddressesToFetch = new Set<string>();
     const fxToFetch = new Map<string, IFxRateRequest>();
 
@@ -235,24 +258,23 @@ export class PaymentIntentAggregate {
       } else if (cmd.msgName === CompleteRemoteQuoteCmd.name) {
         this._collectFxLookup(cmd as CompleteRemoteQuoteCmd, fxToFetch);
       } else if (cmd.msgName === CalculateRemoteQuoteCmd.name) {
+        const payload = (cmd as CalculateRemoteQuoteCmd).payload;
         this._collectInboundFxLookup(
-          (cmd as CalculateRemoteQuoteCmd).payload,
+          payload,
+          this.peersById.get(payload.peerId)?.assetCode,
           fxToFetch
         );
       } else if (cmd.msgName === ValidateReceivedPaymentCmd.name) {
-        this._collectInboundFxLookup(
-          (cmd as ValidateReceivedPaymentCmd).payload,
-          fxToFetch
-        );
+        const payload = (cmd as ValidateReceivedPaymentCmd).payload;
+        this._collectInboundFxLookup(payload, payload.peerAssetCode, fxToFetch);
       }
     }
 
     await Promise.all([
       ...Array.from(ilpAddressesToFetch, async (ilpAddress) => {
         try {
-          // TODO: re-evaluate this approach (popping last) after desintation address
-          // formation unstubbed. See destinationIlpAddress stub in remote-payment-intent-adapter.ts
-          // destinationIlpAddress is assumed to be <static>.<static>.<dynamic> (number of static sections variable)
+          // STREAM destinations are <serverAddress>.<connectionToken>; peer ILP
+          // address is the serverAddress prefix (everything but the last segment).
           const staticAddress = ilpAddress.split('.').slice(0, -1).join('.');
           const peer =
             await this._palService.getPeerByIlpAddress(staticAddress);
@@ -760,8 +782,13 @@ export class PaymentIntentAggregate {
       } = pendingQuote;
 
       if (!peerId || !peerAssetCode || !sourceAmount || !senderAssetCode) {
+        // Should never happen once persistence round-trips faithfully — a hit
+        // here means a pending remote quote was stored/read lossily.
+        this._logger.warn(
+          `handleCompleteRemoteQuoteCommand — pending quote ${quoteId} (paymentIntent ${paymentIntentId}) is missing required remote peer fields (peerId, peerAssetCode, sourceAmount, senderAssetCode)`
+        );
         throw new InvalidQuoteStateError(
-          `Pending quote ${quoteId} is missing required remote peer fields`
+          `Pending quote ${quoteId} is missing required remote peer fields (peerId, peerAssetCode, sourceAmount, senderAssetCode)`
         );
       }
 
@@ -858,8 +885,7 @@ export class PaymentIntentAggregate {
     this._logger.debug(
       `handleCalculateRemoteQuoteCommand — paymentIntentId: ${cmd.payload.paymentIntentId} packetId: ${cmd.payload.packetId}`
     );
-    const { packetId, peerId, paymentIntentId, peerAssetCode, peerAssetScale } =
-      cmd.payload;
+    const { packetId, peerId, paymentIntentId } = cmd.payload;
 
     try {
       const paymentIntentObj = this.paymentIntentMap.get(paymentIntentId);
@@ -870,6 +896,15 @@ export class PaymentIntentAggregate {
       }
 
       const paymentIntent = PaymentIntent.fromObject(paymentIntentObj);
+
+      // Peer asset was prefetched from PAL by peerId (not carried on the command).
+      const peerFetchError = this.peerByIdFetchErrors.get(peerId);
+      if (peerFetchError) throw peerFetchError;
+      const peer = this.peersById.get(peerId);
+      if (!peer) {
+        throw new PeerNotFoundError(`No peer found for peer id ${peerId}`);
+      }
+      const { assetCode: peerAssetCode, assetScale: peerAssetScale } = peer;
 
       let fxRate: number | undefined;
       if (peerAssetCode !== paymentIntent.assetCode) {
@@ -1879,10 +1914,14 @@ export class PaymentIntentAggregate {
   }
 
   private _collectInboundFxLookup(
-    payload: { paymentIntentId: string; peerId: string; peerAssetCode: string },
+    payload: { paymentIntentId: string; peerId: string },
+    peerAssetCode: string | undefined,
     into: Map<string, IFxRateRequest>
   ): void {
-    const { paymentIntentId, peerId, peerAssetCode } = payload;
+    const { paymentIntentId, peerId } = payload;
+    // peer not resolved (missing/errored PAL lookup) — the command handler
+    // will fail the quote; nothing to prefetch here.
+    if (!peerAssetCode) return;
     const intent = this.paymentIntentMap.get(paymentIntentId);
     if (!intent) return;
     if (peerAssetCode === intent.assetCode) return;
@@ -2525,6 +2564,8 @@ export class PaymentIntentAggregate {
       this.remotePaymentIntentFetchErrors.clear();
       this.peerMap.clear();
       this.peerFetchErrors.clear();
+      this.peersById.clear();
+      this.peerByIdFetchErrors.clear();
       this.fxRateMap.clear();
       this.fxRateFetchErrors.clear();
     }
