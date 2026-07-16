@@ -125,6 +125,7 @@ export interface StartRemotePaymentCmdPayload {
   assetCode: string;
   assetScale: number;
   expiresAt: string;
+  sharedSecret: string;
 }
 
 export class StartRemotePaymentCmd extends CommandMsg {
