@@ -13,7 +13,11 @@ import {
   StartRemoteQuoteCmd,
   UpdatePeerCmd
 } from '../commands';
-import { IPeeringClient, PacketCorrelation } from '../packet';
+import {
+  IPeeringClient,
+  IInboundPacketReplyHandle,
+  PacketCorrelation
+} from '../packet';
 import { PacketNotFound } from '../packet/errors';
 import { Peer } from './entity';
 import { DuplicatePeer, UnknownPeer } from './errors';
@@ -313,15 +317,21 @@ export class IlpPeerAggregate {
     // handed us are usable as a quoting probe.
     // TODO: Replace when STREAM decode is implemented
     if (!this.isDecodableProbe(payload)) {
-      await this.rejectInbound(payload.peerId, payload.packetId);
+      await this.rejectInbound(payload);
       return [];
     }
 
     const peer = await this.peerRepo.fetchById(payload.peerId);
     if (!peer || peer.isActive === false) {
-      await this.rejectInbound(payload.peerId, payload.packetId);
+      await this.rejectInbound(payload);
       return [];
     }
+
+    await this.peerRepo.storeInboundReplyHandle({
+      packetId: payload.packetId,
+      peerId: payload.peerId,
+      replyHandle: payload.replyHandle
+    });
 
     return [
       new ILPQuoteRequestReceivedEvent({
@@ -338,18 +348,26 @@ export class IlpPeerAggregate {
     cmd: RespondToRemoteQuoteCmd
   ): Promise<IMessage[]> {
     const payload = cmd.payload;
+    const replyHandle = await this.peerRepo.fetchInboundReplyHandle(
+      payload.packetId
+    );
+    if (!replyHandle) {
+      return [];
+    }
 
     if (payload.destinationAmount === undefined) {
-      await this.rejectInbound(payload.peerId, payload.packetId);
+      await this.rejectInbound(replyHandle, REJECT_CODE_INTERNAL);
       return [];
     }
 
     await this.peeringClient.dispatchReject({
       peerId: payload.peerId,
       packetId: payload.packetId,
+      replyHandle: replyHandle.replyHandle,
       rejectCode: REJECT_CODE_QUOTE_RESPONSE,
       destinationAmount: payload.destinationAmount
     });
+    await this.peerRepo.deleteInboundReplyHandle(payload.packetId);
     return [];
   }
 
@@ -362,11 +380,16 @@ export class IlpPeerAggregate {
     );
   }
 
-  private async rejectInbound(peerId: string, packetId: string): Promise<void> {
+  private async rejectInbound(
+    context: ProcessPreparePacketCmdPayload | IInboundPacketReplyHandle,
+    rejectCode: string = REJECT_CODE_INTERNAL
+  ): Promise<void> {
+    await this.peerRepo.deleteInboundReplyHandle(context.packetId);
     await this.peeringClient.dispatchReject({
-      peerId,
-      packetId,
-      rejectCode: REJECT_CODE_INTERNAL
+      peerId: context.peerId,
+      packetId: context.packetId,
+      replyHandle: context.replyHandle,
+      rejectCode
     });
   }
 
