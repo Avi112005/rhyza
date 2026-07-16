@@ -221,6 +221,8 @@ export class PaymentIntentAggregate {
     for (const cmd of cmds) {
       if (cmd.msgName === CalculateRemoteQuoteCmd.name) {
         peerIdsToFetch.add((cmd as CalculateRemoteQuoteCmd).payload.peerId);
+      } else if (cmd.msgName === ValidateReceivedPaymentCmd.name) {
+        peerIdsToFetch.add((cmd as ValidateReceivedPaymentCmd).payload.peerId);
       }
     }
     await Promise.all(
@@ -265,8 +267,15 @@ export class PaymentIntentAggregate {
           fxToFetch
         );
       } else if (cmd.msgName === ValidateReceivedPaymentCmd.name) {
+        // Peer asset (and thus the FX lookup) is resolved from PAL by peerId,
+        // prefetched into peersById above — mirrors the CalculateRemoteQuoteCmd
+        // case; the asset is not carried on the command.
         const payload = (cmd as ValidateReceivedPaymentCmd).payload;
-        this._collectInboundFxLookup(payload, payload.peerAssetCode, fxToFetch);
+        this._collectInboundFxLookup(
+          payload,
+          this.peersById.get(payload.peerId)?.assetCode,
+          fxToFetch
+        );
       }
     }
 
@@ -1120,7 +1129,7 @@ export class PaymentIntentAggregate {
           paymentIntentId: paymentIntent.id,
           paymentId: payment.id,
           ledgerTransferId,
-          destinationIlpAddress: paymentIntent.destinationIlpAddress,
+          destinationIlpAddress: remoteDetails.destinationIlpAddress,
           peerId: paymentIntent.peerId!,
           requestId: cmd.requestId,
           debitAmount: String(payment.debitAmount),
@@ -1408,9 +1417,7 @@ export class PaymentIntentAggregate {
       id: receivedPaymentId,
       paymentIntentId,
       packetId,
-      peerId,
-      peerAssetCode,
-      peerAssetScale
+      peerId
     } = cmd.payload;
 
     try {
@@ -1422,6 +1429,16 @@ export class PaymentIntentAggregate {
       }
 
       const paymentIntent = PaymentIntent.fromObject(paymentIntentObj);
+
+      // Peer asset is resolved from PAL by peerId (prefetched into peersById),
+      // not carried on the inbound ILP event.
+      const peerByIdError = this.peerByIdFetchErrors.get(peerId);
+      if (peerByIdError) throw peerByIdError;
+      const peer = this.peersById.get(peerId);
+      if (!peer) {
+        throw new PeerNotFoundError(`No peer found for peer id ${peerId}`);
+      }
+      const { assetCode: peerAssetCode, assetScale: peerAssetScale } = peer;
 
       let fxRate: number | undefined;
       if (peerAssetCode !== paymentIntent.assetCode) {

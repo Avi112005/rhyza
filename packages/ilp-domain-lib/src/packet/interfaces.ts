@@ -46,12 +46,18 @@ export interface IInboundPacketReplyHandle {
 export interface IPeeringClient {
   dispatch(input: PacketDispatch): Promise<void>;
   dispatchReject(input: RejectDispatch): Promise<void>;
+  dispatchFulfill(input: FulfillDispatch): Promise<void>;
 }
 
 export interface InboundReplyDispatch {
   peerId: string;
   packetId: string;
   replyHandle: string;
+}
+
+export interface FulfillDispatch extends InboundReplyDispatch {
+  fulfillment: string;
+  data?: string;
 }
 
 export interface RejectDispatch extends InboundReplyDispatch {
@@ -87,4 +93,7 @@ export interface PaymentDispatch {
   assetCode: string;
   assetScale: number;
   expiresAt: string;
+  sharedSecret: string;
+  executionCondition: string;
+  data: string;
 }

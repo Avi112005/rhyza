@@ -907,15 +907,19 @@ describe('PaymentIntentAggregate.handleBatch', () => {
           peerAssetScale: number;
         }> = {}
       ): ValidateReceivedPaymentCmd {
+        const peerId = overrides.peerId ?? 'peer-1';
+        mockPalService.setPeerById({
+          peerId,
+          assetCode: overrides.peerAssetCode ?? 'USD',
+          assetScale: overrides.peerAssetScale ?? 2
+        });
         return new ValidateReceivedPaymentCmd(
           {
             id: overrides.id ?? crypto.randomUUID(),
             paymentIntentId: overrides.paymentIntentId ?? crypto.randomUUID(),
             packetId: overrides.packetId ?? crypto.randomUUID(),
-            peerId: overrides.peerId ?? 'peer-1',
-            sourceAmount: overrides.sourceAmount ?? '100',
-            peerAssetCode: overrides.peerAssetCode ?? 'USD',
-            peerAssetScale: overrides.peerAssetScale ?? 2
+            peerId,
+            sourceAmount: overrides.sourceAmount ?? '100'
           },
           crypto.randomUUID()
         );
@@ -951,11 +955,14 @@ describe('PaymentIntentAggregate.handleBatch', () => {
         const intent = makeLocalIntent({ assetCode: 'XRP', assetScale: 4 });
         await repo.storeMany([intent]);
         mockPalService.getRates = async () => 2;
+        mockPalService.setPeerById({
+          peerId: 'peer-1',
+          assetCode: 'EUR',
+          assetScale: 2
+        });
 
         const cmd = makeValidateReceivedPaymentCmd({
           paymentIntentId: intent.id,
-          peerAssetCode: 'EUR',
-          peerAssetScale: 2,
           sourceAmount: '100'
         });
         const { events } = await aggregate.handleBatch([cmd]);
@@ -1120,9 +1127,7 @@ describe('PaymentIntentAggregate.handleBatch', () => {
         mockPalService.getRates = async () => null;
 
         const cmd = makeValidateReceivedPaymentCmd({
-          paymentIntentId: intent.id,
-          peerAssetCode: 'USD',
-          peerAssetScale: 2
+          paymentIntentId: intent.id
         });
         const { events } = await aggregate.handleBatch([cmd]);
 
@@ -1133,6 +1138,25 @@ describe('PaymentIntentAggregate.handleBatch', () => {
         const payload = (events[0] as ReceivedPaymentValidationFailedEvent)
           .payload;
         assert.equal(payload.errorName, 'RatesError');
+      });
+
+      it('fails with PeerNotFoundError when PAL has no peer for peerId', async () => {
+        const intent = makeLocalIntent({ assetCode: 'USD', assetScale: 2 });
+        await repo.storeMany([intent]);
+        mockPalService.getPeerById = async () => null;
+
+        const cmd = makeValidateReceivedPaymentCmd({
+          paymentIntentId: intent.id
+        });
+        const { events } = await aggregate.handleBatch([cmd]);
+
+        assert.equal(
+          events[0].msgName,
+          ReceivedPaymentValidationFailedEvent.name
+        );
+        const payload = (events[0] as ReceivedPaymentValidationFailedEvent)
+          .payload;
+        assert.equal(payload.errorName, 'PeerNotFoundError');
       });
     });
 
@@ -2247,7 +2271,7 @@ describe('PaymentIntentAggregate.handleBatch', () => {
           assetCode: 'USD',
           assetScale: 2,
           receivedAmount: 0n,
-          destinationIlpAddress: 'g.peer.123',
+          destinationIlpAddress: 'g.peer.fresh-token',
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
           sharedSecret: 'fresh-per-prepare-secret'
         });
@@ -2281,7 +2305,12 @@ describe('PaymentIntentAggregate.handleBatch', () => {
         assert.equal(payload.paymentIntentId, paymentIntentId);
         assert.equal(payload.paymentId, paymentId);
         assert.equal(payload.ledgerTransferId, palTransferId);
-        assert.equal(payload.destinationIlpAddress, 'g.peer.123');
+        // Pair destination + secret from the same OP fetch, not quote-time address.
+        assert.equal(payload.destinationIlpAddress, 'g.peer.fresh-token');
+        assert.notEqual(
+          payload.destinationIlpAddress,
+          paymentIntent.destinationIlpAddress
+        );
         assert.equal(payload.debitAmount, '500');
         assert.equal(payload.receiveAmount, '100');
         assert.equal(payload.sharedSecret, 'fresh-per-prepare-secret');
