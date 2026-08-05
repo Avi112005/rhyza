@@ -18,16 +18,18 @@ interface SubjectId {
   id: string;
 }
 
-interface JsonWebKey {
-  kty: string;
-  kid: string;
-  use?: string;
-  alg: string;
-  crv: string;
-  x: string;
+export interface SignedCommandPayload {
+  client: string;
+  signatureData: {
+    url: string;
+    method: string;
+    body: string;
+    headers: Record<string, string>;
+    kid: string;
+  };
 }
 
-export interface CreateGrantCmdPayload {
+export interface CreateGrantCmdPayload extends SignedCommandPayload {
   id: string;
   access: {
     identifier?: string;
@@ -35,7 +37,6 @@ export interface CreateGrantCmdPayload {
     actions: string[];
     limits?: LimitPayload;
   }[];
-  client?: string | JsonWebKey;
   interact?: {
     start: string[];
     finish?: {
