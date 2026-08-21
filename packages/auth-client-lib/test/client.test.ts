@@ -2,9 +2,6 @@
 
 import { after, before, describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import * as grpc from '@grpc/grpc-js';
-import { ServiceError } from '@grpc/grpc-js';
 import {
   createHeaders,
   generateTestKeys
@@ -103,7 +100,7 @@ describe('Auth Client', () => {
 
       assert.ok(result);
       assert.ok(result.getAccessTokenValue());
-      assert.ok(result.getAccessTokenManagementId);
+      assert.ok(result.getAccessTokenManagementId());
       assert.ok(result.getAccessTokenExpiresIn());
       assert.ok(result.getContinueId());
       assert.ok(result.getContinueToken());
@@ -181,40 +178,116 @@ describe('Auth Client', () => {
     });
   });
 
-  describe('getGrant', () => {
-    test('returns the grant for an existing id', async () => {
-      const keys = generateTestKeys();
+  describe('continueGrant', () => {
+    async function createInteractiveGrant(
+      keys: ReturnType<typeof generateTestKeys>,
+      options: { withFinish?: boolean } = {}
+    ) {
       const signatureData = await signedSignatureData(
         keys.privateKey,
         keys.publicKey.kid
       );
 
-      const access = makeAccessItem({
-        type: 'INCOMING_PAYMENT',
-        actions: ['READ']
-      });
-      const createResult = await authClient.createGrant(
+      const createOptions: {
+        access: AccessItem[];
+        finish?: GrantRequestFinish;
+      } = {
+        access: [
+          makeAccessItem({ type: 'OUTGOING_PAYMENT', actions: ['CREATE'] })
+        ]
+      };
+
+      if (options.withFinish) {
+        const finish = new GrantRequestFinish();
+        finish.setFinish('REDIRECT');
+        finish.setUri('https://client.example/finish');
+        finish.setNonce('finish-nonce');
+        createOptions.finish = finish;
+      }
+
+      return authClient.createGrant(
         JSON.stringify(keys.publicKey),
         signatureData,
-        { access: [access] }
+        createOptions
+      );
+    }
+
+    test('continues pending grant and rotates continue token', async () => {
+      const keys = generateTestKeys();
+      const created = await createInteractiveGrant(keys);
+
+      assert.ok(created.getId());
+      assert.ok(created.getContinueId());
+      assert.ok(created.getContinueToken());
+
+      // Continue tokens are inactive until the grant poll window elapses.
+      await new Promise((resolve) => setTimeout(resolve, 5_100));
+
+      const signatureData = await signedSignatureData(
+        keys.privateKey,
+        keys.publicKey.kid
       );
 
-      const result = await authClient.getGrant(createResult.getId());
+      const result = await authClient.continueGrant(
+        created.getId(),
+        signatureData,
+        created.getContinueId(),
+        created.getContinueToken()
+      );
 
       assert.ok(result);
-      assert.equal(result.getId(), createResult.getId());
-      assert.equal(result.getState(), 'FINALIZED');
-      assert.equal(result.getClient(), JSON.stringify(keys.publicKey));
-      assert.equal(result.getAccessesList().length, 1);
+      assert.equal(result.getId(), created.getId());
+      assert.equal(result.getState(), 'PENDING');
+      assert.ok(result.getContinueId());
+      assert.ok(result.getContinueToken());
+      assert.notEqual(result.getContinueToken(), created.getContinueToken());
+      assert.notEqual(result.getContinueId(), created.getContinueId());
+      assert.equal(result.getAccessTokenValue(), '');
+      assert.equal(result.getAccessTokenManagementId(), '');
+      assert.equal(result.getAccessTokenExpiresIn(), 0);
     });
 
-    test('rejects with NOT_FOUND for an id that does not exist', async () => {
+    test('rejects continue with invalid continue token', async () => {
+      const keys = generateTestKeys();
+      const created = await createInteractiveGrant(keys);
+      const signatureData = await signedSignatureData(
+        keys.privateKey,
+        keys.publicKey.kid
+      );
+
       try {
-        await authClient.getGrant(randomUUID());
-        assert.fail('expected error for an unknown grant id');
+        await authClient.continueGrant(
+          created.getId(),
+          signatureData,
+          created.getContinueId(),
+          'invalid-continue-token'
+        );
+        assert.fail('expected error for invalid continue token');
       } catch (e) {
         assert.ok(e instanceof Error);
-        assert.equal((e as ServiceError).code, grpc.status.NOT_FOUND);
+      }
+    });
+
+    test('rejects continue with invalid signature', async () => {
+      const clientKeys = generateTestKeys();
+      const created = await createInteractiveGrant(clientKeys);
+
+      const signerKeys = generateTestKeys();
+      const signatureData = await signedSignatureData(
+        signerKeys.privateKey,
+        clientKeys.publicKey.kid
+      );
+
+      try {
+        await authClient.continueGrant(
+          created.getId(),
+          signatureData,
+          created.getContinueId(),
+          created.getContinueToken()
+        );
+        assert.fail('expected error for invalid signature');
+      } catch (e) {
+        assert.ok(e instanceof Error);
       }
     });
   });

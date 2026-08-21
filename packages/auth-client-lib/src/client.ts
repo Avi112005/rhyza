@@ -25,10 +25,7 @@ import {
   RevokeTokenRequest
 } from 'auth-public-types-lib';
 
-export type SignatureRequestData = Omit<
-  SignatureData.AsObject,
-  'headersMap'
-> & {
+export type SignatureRequestData = Omit<SignatureData.AsObject, 'headers'> & {
   headers: Record<string, string>;
 };
 
@@ -107,14 +104,7 @@ export class AuthClient {
     request.setClient(client);
     if (options.subjectIds) request.setSubjectIdsList(options.subjectIds);
     request.setFinish(options.finish);
-
-    const signatureDataMsg = new SignatureData();
-    signatureDataMsg.setUrl(signatureData.url);
-    signatureDataMsg.setMethod(signatureData.method);
-    signatureDataMsg.setBody(signatureData.body);
-    signatureDataMsg.setKid(signatureData.kid);
-    signatureDataMsg.setHeaders(JSON.stringify(signatureData.headers));
-    request.setSignatureData(signatureDataMsg);
+    request.setSignatureData(this._toSignatureData(signatureData));
 
     return new Promise((resolve, reject) => {
       this._grpcClient.createGrant(
@@ -132,15 +122,17 @@ export class AuthClient {
 
   continueGrant(
     id: string,
+    signatureData: SignatureRequestData,
     continueId: string,
     continueToken: string,
-    interactRef: string
+    interactRef?: string
   ): Promise<ContinueGrantResponse> {
     const request = new ContinueGrantRequest();
     request.setId(id);
     request.setContinueId(continueId);
     request.setContinueToken(continueToken);
-    request.setInteractRef(interactRef);
+    if (interactRef) request.setInteractRef(interactRef);
+    request.setSignatureData(this._toSignatureData(signatureData));
 
     return new Promise((resolve, reject) => {
       this._grpcClient.continueGrant(
@@ -154,6 +146,16 @@ export class AuthClient {
         }
       );
     });
+  }
+
+  private _toSignatureData(signatureData: SignatureRequestData): SignatureData {
+    const msg = new SignatureData();
+    msg.setUrl(signatureData.url);
+    msg.setMethod(signatureData.method);
+    msg.setBody(signatureData.body);
+    msg.setKid(signatureData.kid);
+    msg.setHeaders(JSON.stringify(signatureData.headers));
+    return msg;
   }
 
   revokeGrant(
