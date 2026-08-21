@@ -6,12 +6,13 @@ import {
   createHeaders,
   generateTestKeys
 } from '@interledger/http-signature-utils';
-import { AuthClient } from '../src/client';
 import {
+  AuthClient,
   AccessItem,
-  GrantRequestFinish,
-  SubjectId
-} from 'auth-public-types-lib';
+  GrantFinish,
+  SubjectId,
+  AccessLimits
+} from '../src/';
 
 describe('Auth Client', () => {
   const AUTH_GRPC_URL = process.env['AUTH_GRPC_URL'] || '0.0.0.0:50054';
@@ -54,12 +55,18 @@ describe('Auth Client', () => {
   }
 
   function makeAccessItem(
-    overrides: { type?: string; actions?: string[] } = {}
+    overrides: {
+      type?: string;
+      actions?: string[];
+      limits?: AccessLimits;
+      identifier?: string;
+    } = {}
   ): AccessItem {
-    const item = new AccessItem();
-    item.setType(overrides.type ?? 'INCOMING_PAYMENT');
-    item.setActionsList(overrides.actions ?? ['READ']);
-    return item;
+    return {
+      type: 'INCOMING_PAYMENT',
+      actions: ['READ'],
+      ...overrides
+    };
   }
 
   let authClient: AuthClient;
@@ -81,9 +88,10 @@ describe('Auth Client', () => {
         keys.publicKey.kid
       );
 
-      const subjectId = new SubjectId();
-      subjectId.setFormat('email');
-      subjectId.setId('alice@example.com');
+      const subjectId: SubjectId = {
+        format: 'uri',
+        id: 'https://wallet.com/alice'
+      };
 
       const access = makeAccessItem({
         type: 'INCOMING_PAYMENT',
@@ -99,20 +107,14 @@ describe('Auth Client', () => {
       );
 
       assert.ok(result);
-      assert.ok(result.getAccessTokenValue());
-      assert.ok(result.getAccessTokenManagementId());
-      assert.ok(result.getAccessTokenExpiresIn());
-      assert.ok(result.getContinueId());
-      assert.ok(result.getContinueToken());
-      assert.equal(result.getInteractionNonce(), '');
-      assert.deepStrictEqual(
-        result.getAccessList().map((a) => a.toObject()),
-        [access].map((a) => a.toObject())
-      );
-      assert.deepStrictEqual(
-        result.getSubIdsList().map((s) => s.toObject()),
-        [subjectId].map((s) => s.toObject())
-      );
+      assert.ok(result.accessTokenValue);
+      assert.ok(result.accessTokenManagementId);
+      assert.ok(result.accessTokenExpiresIn);
+      assert.ok(result.continueId);
+      assert.ok(result.continueToken);
+      assert.equal(result.interactionNonce, undefined);
+      assert.deepStrictEqual(result.access, [access]);
+      assert.deepStrictEqual(result.subjectIds, [subjectId]);
     });
 
     test('create interactive grant', async () => {
@@ -122,13 +124,25 @@ describe('Auth Client', () => {
         keys.publicKey.kid
       );
 
-      const finish = new GrantRequestFinish();
-      finish.setFinish('REDIRECT');
-      finish.setUri('https://client.example/finish');
-      finish.setNonce('finish-nonce');
+      const finish: GrantFinish = {
+        method: 'REDIRECT',
+        uri: 'https://client.example/finish',
+        nonce: 'finish-nonce'
+      };
 
       const access = [
-        makeAccessItem({ type: 'OUTGOING_PAYMENT', actions: ['CREATE'] })
+        makeAccessItem({
+          type: 'OUTGOING_PAYMENT',
+          actions: ['CREATE'],
+          limits: {
+            debitAmount: {
+              assetCode: 'USD',
+              assetScale: 2,
+              value: '100'
+            }
+          },
+          identifier: 'https://wallet.com/alice'
+        })
       ];
 
       const result = await authClient.createGrant(
@@ -141,16 +155,13 @@ describe('Auth Client', () => {
       );
 
       assert.ok(result);
-      assert.ok(result.getContinueId());
-      assert.ok(result.getContinueToken());
-      assert.ok(result.getInteractionNonce());
-      assert.equal(result.getAccessTokenValue(), '');
-      assert.equal(result.getAccessTokenManagementId(), '');
-      assert.equal(result.getAccessTokenExpiresIn(), 0);
-      assert.deepStrictEqual(
-        result.getAccessList().map((a) => a.toObject()),
-        access.map((a) => a.toObject())
-      );
+      assert.ok(result.continueId);
+      assert.ok(result.continueToken);
+      assert.ok(result.interactionNonce);
+      assert.equal(result.accessTokenValue, undefined);
+      assert.equal(result.accessTokenManagementId, undefined);
+      assert.equal(result.accessTokenExpiresIn, undefined);
+      assert.deepStrictEqual(result.access, access);
     });
 
     test('invalid signature is rejected', async () => {
@@ -190,7 +201,7 @@ describe('Auth Client', () => {
 
       const createOptions: {
         access: AccessItem[];
-        finish?: GrantRequestFinish;
+        finish?: GrantFinish;
       } = {
         access: [
           makeAccessItem({ type: 'OUTGOING_PAYMENT', actions: ['CREATE'] })
@@ -198,11 +209,11 @@ describe('Auth Client', () => {
       };
 
       if (options.withFinish) {
-        const finish = new GrantRequestFinish();
-        finish.setFinish('REDIRECT');
-        finish.setUri('https://client.example/finish');
-        finish.setNonce('finish-nonce');
-        createOptions.finish = finish;
+        createOptions.finish = {
+          uri: 'https://client.example/finish',
+          nonce: 'finish-nonce',
+          method: 'redirect'
+        };
       }
 
       return authClient.createGrant(
@@ -216,9 +227,9 @@ describe('Auth Client', () => {
       const keys = generateTestKeys();
       const created = await createInteractiveGrant(keys);
 
-      assert.ok(created.getId());
-      assert.ok(created.getContinueId());
-      assert.ok(created.getContinueToken());
+      assert.ok(created.id);
+      assert.ok(created.continueId);
+      assert.ok(created.continueToken);
 
       // Continue tokens are inactive until the grant poll window elapses.
       await new Promise((resolve) => setTimeout(resolve, 5_100));
@@ -229,22 +240,21 @@ describe('Auth Client', () => {
       );
 
       const result = await authClient.continueGrant(
-        created.getId(),
+        created.id,
         signatureData,
-        created.getContinueId(),
-        created.getContinueToken()
+        created.continueId,
+        created.continueToken
       );
 
       assert.ok(result);
-      assert.equal(result.getId(), created.getId());
-      assert.equal(result.getState(), 'PENDING');
-      assert.ok(result.getContinueId());
-      assert.ok(result.getContinueToken());
-      assert.notEqual(result.getContinueToken(), created.getContinueToken());
-      assert.notEqual(result.getContinueId(), created.getContinueId());
-      assert.equal(result.getAccessTokenValue(), '');
-      assert.equal(result.getAccessTokenManagementId(), '');
-      assert.equal(result.getAccessTokenExpiresIn(), 0);
+      assert.equal(result.id, created.id);
+      assert.ok(result.continueId);
+      assert.ok(result.continueToken);
+      assert.notEqual(result.continueToken, created.continueToken);
+      assert.notEqual(result.continueId, created.continueId);
+      assert.equal(result.accessTokenValue, undefined);
+      assert.equal(result.accessTokenManagementId, undefined);
+      assert.equal(result.accessTokenManagementId, undefined);
     });
 
     test('rejects continue with invalid continue token', async () => {
@@ -257,9 +267,9 @@ describe('Auth Client', () => {
 
       try {
         await authClient.continueGrant(
-          created.getId(),
+          created.id,
           signatureData,
-          created.getContinueId(),
+          created.continueId,
           'invalid-continue-token'
         );
         assert.fail('expected error for invalid continue token');
@@ -280,12 +290,49 @@ describe('Auth Client', () => {
 
       try {
         await authClient.continueGrant(
-          created.getId(),
+          created.id,
           signatureData,
-          created.getContinueId(),
-          created.getContinueToken()
+          created.continueId,
+          created.continueToken
         );
         assert.fail('expected error for invalid signature');
+      } catch (e) {
+        assert.ok(e instanceof Error);
+      }
+    });
+  });
+
+  describe('getGrant', () => {
+    test('returns the grant for an existing id', async () => {
+      const keys = generateTestKeys();
+      const signatureData = await signedSignatureData(
+        keys.privateKey,
+        keys.publicKey.kid
+      );
+
+      const access = makeAccessItem({
+        type: 'INCOMING_PAYMENT',
+        actions: ['READ']
+      });
+      const createResult = await authClient.createGrant(
+        JSON.stringify(keys.publicKey),
+        signatureData,
+        { access: [access] }
+      );
+
+      const result = await authClient.getGrant(createResult.id);
+
+      assert.ok(result);
+      assert.equal(result.id, createResult.id);
+      assert.equal(result.state, 'APPROVED');
+      assert.equal(result.client, JSON.stringify(keys.publicKey));
+      assert.equal(result.accesses.length, 1);
+    });
+
+    test('rejects with NOT_FOUND for an id that does not exist', async () => {
+      try {
+        await authClient.getGrant(crypto.randomUUID());
+        assert.fail('expected error for an unknown grant id');
       } catch (e) {
         assert.ok(e instanceof Error);
       }
