@@ -276,6 +276,33 @@ export class MongoDbGrantRepo implements IGrantRepository {
     }
   }
 
+  async storeRevokedTokens(tokens: IAccessToken[]): Promise<void> {
+    this._checkInitialisedOrThrow();
+
+    if (tokens.length === 0) return;
+
+    try {
+      await this._accessTokenCollection.bulkWrite(
+        tokens.map((token) => ({
+          updateOne: {
+            filter: { value: token.value },
+            update: {
+              $set: {
+                revokedAt: token.revokedAt
+              }
+            }
+          }
+        })),
+        { ordered: false }
+      );
+    } catch (err) {
+      this._logger.error(err);
+      throw new Error(
+        `Unable to store revoked tokens - error: ${(err as Error).message}`
+      );
+    }
+  }
+
   async fetchById(id: string): Promise<IGrant | undefined> {
     this._checkInitialisedOrThrow();
 

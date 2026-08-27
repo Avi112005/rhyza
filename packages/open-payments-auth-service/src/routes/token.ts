@@ -82,9 +82,9 @@ export async function tokenRoutes(
 
       await authClient.revokeToken(
         grantId,
+        extractSignatureData(request),
         tokenValue,
         managementId
-        //TODO pass in http signature data
       );
 
       return reply.status(204).send();

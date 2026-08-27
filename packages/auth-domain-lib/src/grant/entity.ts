@@ -362,8 +362,11 @@ export class GrantEntity implements IGrant {
       throw new UnknownAccessTokenError();
     }
 
-    accessToken.revokedAt = new Date();
-    this._accessTokens.set(value, accessToken);
+    if (!accessToken.revokedAt) {
+      accessToken.revokedAt = new Date();
+      this._accessTokens.set(value, accessToken);
+    }
+
     return accessToken as IAccessToken;
   }
 

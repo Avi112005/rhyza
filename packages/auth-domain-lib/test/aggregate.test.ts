@@ -14,14 +14,17 @@ import {
   CreateGrantCmdPayload,
   IntrospectTokenCmd,
   IntrospectTokenCmdPayload,
+  RevokeTokenCmd,
   RotateTokenCmd
 } from '../src/commands';
 import {
   GrantCreatedEvent,
   GrantCreateFailedEvent,
+  TokenIntrospectedEvent,
+  TokenRevokedEvent,
+  TokenRevokeFailedEvent,
   TokenRotatedEvent,
-  TokenRotationFailedEvent,
-  TokenIntrospectedEvent
+  TokenRotationFailedEvent
 } from '../src/grant/events';
 import { AccessAction, AccessType } from '../src/grant/interfaces';
 import { MockGrantRepo, MockWalletAddressService } from './mocks';
@@ -533,6 +536,180 @@ describe('GrantAggregate.handleBatch', () => {
         const failPayload = (events[1] as TokenRotationFailedEvent).payload;
         assert.equal(failPayload.errorName, 'UnknownAccessTokenError');
         assert.equal(failPayload.grantId, grantId);
+      });
+    });
+
+    describe('handleRevokeTokenCommand', () => {
+      async function createIssuedGrant() {
+        const keys = generateTestKeys();
+        const createCmd = makeCreateGrantCmd({
+          client: JSON.stringify(keys.publicKey),
+          signatureData: await signedSignatureData(
+            keys.privateKey,
+            keys.publicKey.kid
+          )
+        });
+        const { events } = await aggregate.handleBatch([createCmd]);
+        await aggregate.flush();
+
+        const created = events[0] as GrantCreatedEvent;
+        assert.ok(created.payload.accessTokenValue);
+        assert.ok(created.payload.accessTokenManagementId);
+
+        return {
+          keys,
+          grantId: created.payload.id,
+          tokenValue: created.payload.accessTokenValue!,
+          managementId: created.payload.accessTokenManagementId!
+        };
+      }
+
+      it('revokes a valid token and persists the revocation', async () => {
+        const { keys, grantId, tokenValue, managementId } =
+          await createIssuedGrant();
+
+        const before = await aggregate.handleBatch([
+          makeIntrospectTokenCmd({ id: grantId, tokenValue })
+        ]);
+        assert.equal(before.events[0].msgName, TokenIntrospectedEvent.name);
+        assert.equal(
+          (before.events[0] as TokenIntrospectedEvent).payload.active,
+          true
+        );
+
+        const { events } = await aggregate.handleBatch([
+          new RevokeTokenCmd(
+            {
+              id: grantId,
+              value: tokenValue,
+              managementId,
+              signatureData: await signedSignatureData(
+                keys.privateKey,
+                keys.publicKey.kid
+              )
+            },
+            randomUUID()
+          )
+        ]);
+        await aggregate.flush();
+
+        assert.equal(events.length, 1);
+        assert.equal(events[0].msgName, TokenRevokedEvent.name);
+        assert.equal((events[0] as TokenRevokedEvent).payload.id, grantId);
+
+        const stored = await repo.fetchById(grantId);
+        assert.ok(stored);
+        const revoked = stored.accessTokens.find((t) => t.value === tokenValue);
+        assert.ok(revoked?.revokedAt);
+
+        const after = await aggregate.handleBatch([
+          makeIntrospectTokenCmd({ id: grantId, tokenValue })
+        ]);
+        assert.equal(after.events[0].msgName, TokenIntrospectedEvent.name);
+        assert.equal(
+          (after.events[0] as TokenIntrospectedEvent).payload.active,
+          false
+        );
+      });
+
+      it('fails with UnauthorizedRequestError for an invalid signature', async () => {
+        const { grantId, tokenValue, managementId } = await createIssuedGrant();
+        const wrongKeys = generateTestKeys();
+
+        const { events } = await aggregate.handleBatch([
+          new RevokeTokenCmd(
+            {
+              id: grantId,
+              value: tokenValue,
+              managementId,
+              signatureData: await signedSignatureData(
+                wrongKeys.privateKey,
+                wrongKeys.publicKey.kid
+              )
+            },
+            randomUUID()
+          )
+        ]);
+
+        assert.equal(events.length, 1);
+        assert.equal(events[0].msgName, TokenRevokeFailedEvent.name);
+        const payload = (events[0] as TokenRevokeFailedEvent).payload;
+        assert.equal(payload.errorName, 'UnauthorizedRequestError');
+        assert.equal(payload.grantId, grantId);
+      });
+
+      it('fails with UnknownAccessTokenError for an unknown token value', async () => {
+        const { keys, grantId, managementId } = await createIssuedGrant();
+
+        const { events } = await aggregate.handleBatch([
+          new RevokeTokenCmd(
+            {
+              id: grantId,
+              value: 'unknown-token-value',
+              managementId,
+              signatureData: await signedSignatureData(
+                keys.privateKey,
+                keys.publicKey.kid
+              )
+            },
+            randomUUID()
+          )
+        ]);
+
+        assert.equal(events.length, 1);
+        assert.equal(events[0].msgName, TokenRevokeFailedEvent.name);
+        const payload = (events[0] as TokenRevokeFailedEvent).payload;
+        assert.equal(payload.errorName, 'UnknownAccessTokenError');
+      });
+
+      it('fails with UnknownAccessTokenError for a mismatched managementId', async () => {
+        const { keys, grantId, tokenValue } = await createIssuedGrant();
+
+        const { events } = await aggregate.handleBatch([
+          new RevokeTokenCmd(
+            {
+              id: grantId,
+              value: tokenValue,
+              managementId: 'wrong-management-id',
+              signatureData: await signedSignatureData(
+                keys.privateKey,
+                keys.publicKey.kid
+              )
+            },
+            randomUUID()
+          )
+        ]);
+
+        assert.equal(events.length, 1);
+        assert.equal(events[0].msgName, TokenRevokeFailedEvent.name);
+        const payload = (events[0] as TokenRevokeFailedEvent).payload;
+        assert.equal(payload.errorName, 'UnknownAccessTokenError');
+      });
+
+      it('fails with GrantNotFoundError when the grant does not exist', async () => {
+        const keys = generateTestKeys();
+        const missingGrantId = randomUUID();
+
+        const { events } = await aggregate.handleBatch([
+          new RevokeTokenCmd(
+            {
+              id: missingGrantId,
+              value: 'token',
+              managementId: 'management-id',
+              signatureData: await signedSignatureData(
+                keys.privateKey,
+                keys.publicKey.kid
+              )
+            },
+            randomUUID()
+          )
+        ]);
+
+        assert.equal(events.length, 1);
+        assert.equal(events[0].msgName, TokenRevokeFailedEvent.name);
+        const payload = (events[0] as TokenRevokeFailedEvent).payload;
+        assert.equal(payload.errorName, 'GrantNotFoundError');
+        assert.equal(payload.grantId, missingGrantId);
       });
     });
 

@@ -59,6 +59,16 @@ export abstract class GrantDomainEvent extends DomainEvent {
     return evt.msgName === TokenRotationFailedEvent.name;
   }
 
+  static isTokenRevokedEvent(evt: DomainEvent): evt is TokenRevokedEvent {
+    return evt.msgName === TokenRevokedEvent.name;
+  }
+
+  static isTokenRevokeFailedEvent(
+    evt: DomainEvent
+  ): evt is TokenRevokeFailedEvent {
+    return evt.msgName === TokenRevokeFailedEvent.name;
+  }
+
   static isGrantInteractionChoiceHandledEvent(
     evt: DomainEvent
   ): evt is GrantInteractionChoiceHandledEvent {
@@ -185,10 +195,13 @@ export class GrantRevokedEvent extends DomainEvent {
   msgTopic: string = DomainEventTopics.AuthEvents;
   payload: GrantRevokedPayload;
 
-  constructor(payload: GrantRevokedPayload) {
+  constructor(payload: GrantRevokedPayload, requestId?: string) {
     super(payload.id);
     this.aggregateId = this.msgKey = payload.id;
     this.payload = payload;
+    if (requestId) {
+      this.requestId = requestId;
+    }
   }
 }
 
@@ -206,10 +219,13 @@ export class GrantRevokeFailedEvent extends DomainEvent {
   msgTopic: string = DomainEventTopics.AuthEvents;
   payload: GrantRevokeFailedPayload;
 
-  constructor(payload: GrantRevokeFailedPayload) {
+  constructor(payload: GrantRevokeFailedPayload, requestId?: string) {
     super(payload.grantId);
     this.aggregateId = this.msgKey = payload.grantId;
     this.payload = payload;
+    if (requestId) {
+      this.requestId = requestId;
+    }
   }
 }
 
@@ -276,6 +292,48 @@ export class TokenRotationFailedEvent extends DomainEvent {
   payload: TokenRotationFailedPayload;
 
   constructor(payload: TokenRotationFailedPayload, requestId?: string) {
+    super(payload.grantId);
+    this.aggregateId = this.msgKey = payload.grantId;
+    this.payload = payload;
+    this.requestId = requestId;
+  }
+}
+
+export interface TokenRevokedPayload {
+  id: string;
+}
+
+export class TokenRevokedEvent extends DomainEvent {
+  contextName: string = BOUNDED_CONTEXT_NAME;
+  aggregateId: string;
+  aggregateName: string = AGGREGATE_NAME;
+  msgKey: string;
+  msgTopic: string = DomainEventTopics.AuthEvents;
+  payload: TokenRevokedPayload;
+
+  constructor(payload: TokenRevokedPayload, requestId?: string) {
+    super(payload.id);
+    this.aggregateId = this.msgKey = payload.id;
+    this.payload = payload;
+    this.requestId = requestId;
+  }
+}
+
+export interface TokenRevokeFailedPayload {
+  grantId: string;
+  errorName: string;
+  message: string;
+}
+
+export class TokenRevokeFailedEvent extends DomainEvent {
+  contextName: string = BOUNDED_CONTEXT_NAME;
+  aggregateId: string;
+  aggregateName: string = AGGREGATE_NAME;
+  msgKey: string;
+  msgTopic: string = DomainEventTopics.AuthEvents;
+  payload: TokenRevokeFailedPayload;
+
+  constructor(payload: TokenRevokeFailedPayload, requestId?: string) {
     super(payload.grantId);
     this.aggregateId = this.msgKey = payload.grantId;
     this.payload = payload;
