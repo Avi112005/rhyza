@@ -48,6 +48,12 @@ export class MockGrantRepo implements IGrantRepository {
     }
   }
 
+  async storeInteractions(grants: IGrant[]): Promise<void> {
+    for (const grant of grants) {
+      this._store.set(grant.id, grant);
+    }
+  }
+
   async storeRevokedTokens(tokens: IAccessToken[]): Promise<void> {
     for (const token of tokens) {
       for (const [grantId, grant] of this._store) {

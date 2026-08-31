@@ -14,6 +14,8 @@ import {
   RotateTokenResponse as PbRotateTokenResponse,
   RevokeTokenResponse as PbRevokeTokenResponse,
   CreateGrantResponse as PbCreateGrantResponse,
+  StartInteractionResponse as PbStartInteractionResponse,
+  StartInteractionRequest as PbStartInteractionRequest,
   HandleInteractionChoiceResponse as PbHandleInteractionChoiceResponse,
   AcceptInteractionRequest as PbAcceptInteractionRequest,
   RejectInteractionRequest as PbRejectInteractionRequest,
@@ -41,6 +43,7 @@ import {
   RevokeTokenResult,
   RotateTokenResult,
   SignatureRequestData,
+  StartInteractionResult,
   SubjectId
 } from './types';
 
@@ -272,6 +275,24 @@ export class AuthClient {
     });
   }
 
+  startInteraction(id: string): Promise<StartInteractionResult> {
+    const request = new PbStartInteractionRequest();
+    request.setId(id);
+
+    return new Promise((resolve, reject) => {
+      this._grpcClient.startInteraction(
+        request,
+        (error: ServiceError | null, response: PbStartInteractionResponse) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve({ id: response.getId(), nonce: response.getNonce() });
+          }
+        }
+      );
+    });
+  }
+
   acceptInteraction(
     id: string,
     interactRef: string,
@@ -440,7 +461,7 @@ function fromPbInteraction(
     interactRef: interaction.getInteractRef(),
     clientNonce: interaction.getClientNonce(),
     state: interaction.getState(),
-    expiresInMs: interaction.getExpiresInMs()
+    expiresAt: interaction.getExpiresAt()
   };
 }
 

@@ -109,8 +109,8 @@ export type GrantState = keyof typeof GrantState;
 export interface IInteraction {
   interactRef: string;
   state: InteractionState;
-  expiresInMs: number;
-  clientNonce: string;
+  createdAt: Date; // Unix timestamp
+  expiresAt: Date; // Unix timstamp
 }
 
 export interface IGrant {
@@ -194,4 +194,5 @@ export interface IGrantRepository {
   storeRevokedTokens(tokens: IAccessToken[]): Promise<void>;
   fetchById(id: string): Promise<IGrant | undefined>;
   fetchByIds(ids: string[]): Promise<IGrant[]>;
+  storeInteractions(grants: IGrant[]): Promise<void>;
 }
