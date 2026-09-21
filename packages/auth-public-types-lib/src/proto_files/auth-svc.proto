@@ -205,11 +205,8 @@ message HandleInteractionChoiceResponse {
 
 message AcceptInteractionRequest {
 	string id = 1; // grant id
-	string interact_ref = 2;
-	string nonce = 3;
 }
 
 message RejectInteractionRequest {
 	string id = 1; // grant id
-	string nonce = 2;
 }

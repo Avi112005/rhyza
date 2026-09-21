@@ -2,8 +2,8 @@ import { ILogger, IMessage } from 'common-types-lib';
 import {
   ContinueGrantCmd,
   CreateGrantCmd,
-  AcceptInteractionCommand,
-  RejectInteractionCommand,
+  AcceptInteractionCmd,
+  RejectInteractionCmd,
   RevokeGrantCmd,
   IntrospectTokenCmd,
   RotateTokenCmd,
@@ -71,6 +71,8 @@ export class GrantAggregate {
   private revokedGrantIds = new Set<string>();
   private grantMap = new Map<string, GrantEntity>();
   private newGrantInteractions = new Set<string>(); // grant ids
+  private updatedGrantInteractions = new Set<string>(); // grant ids
+  private finishedInteractiveGrantIds = new Set<string>();
   private walletAddressRequestMap = new Map<
     string,
     { kid: string; requestId: string }[]
@@ -122,8 +124,8 @@ export class GrantAggregate {
         cmd.msgName === RotateTokenCmd.name ||
         cmd.msgName === RevokeTokenCmd.name ||
         cmd.msgName === StartInteractionCmd.name ||
-        cmd.msgName === AcceptInteractionCommand.name ||
-        cmd.msgName === RejectInteractionCommand.name ||
+        cmd.msgName === AcceptInteractionCmd.name ||
+        cmd.msgName === RejectInteractionCmd.name ||
         cmd.msgName === FinishInteractionCmd.name
       ) {
         grantIdSet.add(
@@ -135,8 +137,8 @@ export class GrantAggregate {
               | RotateTokenCmd
               | RevokeTokenCmd
               | StartInteractionCmd
-              | AcceptInteractionCommand
-              | RejectInteractionCommand
+              | AcceptInteractionCmd
+              | RejectInteractionCmd
               | FinishInteractionCmd
           ).payload.id
         );
@@ -179,13 +181,13 @@ export class GrantAggregate {
         event = await this.handleRevokeTokenCommand(cmd as RevokeTokenCmd);
       } else if (cmd.msgName === StartInteractionCmd.name) {
         event = this.handleStartInteractionCommand(cmd as StartInteractionCmd);
-      } else if (cmd.msgName === AcceptInteractionCommand.name) {
+      } else if (cmd.msgName === AcceptInteractionCmd.name) {
         event = this.handleAcceptInteractionCommand(
-          cmd as AcceptInteractionCommand
+          cmd as AcceptInteractionCmd
         );
-      } else if (cmd.msgName === RejectInteractionCommand.name) {
+      } else if (cmd.msgName === RejectInteractionCmd.name) {
         event = this.handleRejectInteractionCommand(
-          cmd as RejectInteractionCommand
+          cmd as RejectInteractionCmd
         );
       } else if (cmd.msgName === FinishInteractionCmd.name) {
         event = this.handleFinishInteractionCommand(
@@ -279,11 +281,12 @@ export class GrantAggregate {
         }
       );
 
-      // TODO: pass in finish URI and finish Nonce
       const { entity, accessToken } = GrantEntity.create({
         ...cmd.payload,
         startMethods: cmd.payload.interact?.start as IStartMethod[],
         finishMethod: cmd.payload.interact?.finish?.method as IFinishMethod,
+        finishNonce: cmd.payload.interact?.finish?.nonce,
+        finishUri: cmd.payload.interact?.finish?.uri,
         subjectIds: cmd.payload.subjectIds as ISubjectId[],
         accesses: accessItems
       });
@@ -646,6 +649,7 @@ export class GrantAggregate {
 
       grant.finishInteraction(nonce);
       this.grantMap.set(id, grant);
+      this.finishedInteractiveGrantIds.add(id);
 
       return new GrantInteractionFinishedEvent(
         {
@@ -671,7 +675,7 @@ export class GrantAggregate {
   private handleInteractionChoice(
     id: string,
     choice: InteractionChoice,
-    interactRef?: string
+    requestId?: string
   ) {
     try {
       const grant = this.grantMap.get(id);
@@ -681,37 +685,44 @@ export class GrantAggregate {
 
       grant.handleInteraction(choice);
       this.grantMap.set(id, grant);
+      this.updatedGrantInteractions.add(id);
 
-      return new GrantInteractionChoiceHandledEvent({
-        id,
-        interactRef
-      });
+      return new GrantInteractionChoiceHandledEvent(
+        {
+          id,
+          choice
+        },
+        requestId
+      );
     } catch (error) {
-      return new GrantInteractionChoiceFailedEvent({
-        grantId: id,
-        errorName: (error as Error).name,
-        message: (error as Error).message
-      });
+      return new GrantInteractionChoiceFailedEvent(
+        {
+          grantId: id,
+          errorName: (error as Error).constructor.name,
+          message: (error as Error).message
+        },
+        requestId
+      );
     }
   }
 
-  private handleAcceptInteractionCommand(cmd: AcceptInteractionCommand) {
-    const { id, interactRef } = cmd.payload;
+  private handleAcceptInteractionCommand(cmd: AcceptInteractionCmd) {
+    const { id } = cmd.payload;
 
     return this.handleInteractionChoice(
       id,
       InteractionState.APPROVED,
-      interactRef
+      cmd.requestId
     );
   }
 
-  private handleRejectInteractionCommand(cmd: RejectInteractionCommand) {
-    const { id, interactRef } = cmd.payload;
+  private handleRejectInteractionCommand(cmd: RejectInteractionCmd) {
+    const { id } = cmd.payload;
 
     return this.handleInteractionChoice(
       id,
       InteractionState.REJECTED,
-      interactRef
+      cmd.requestId
     );
   }
 
@@ -764,6 +775,26 @@ export class GrantAggregate {
       promises.push(this._repo.storeContinuedGrants(continuedEntities));
     }
 
+    if (this.finishedInteractiveGrantIds.size > 0) {
+      const finishedEntities = [];
+      for (const id of this.finishedInteractiveGrantIds) {
+        const grant = this.grantMap.get(id);
+        if (!grant) {
+          this._logger.error(
+            `Grant ${id} missing from grantMap during finish interaction flush`
+          );
+          continue;
+        }
+        finishedEntities.push({
+          id: grant.id,
+          state: grant.state
+        });
+        promises.push(
+          this._repo.storeFinishedInteractiveGrants(finishedEntities)
+        );
+      }
+    }
+
     if (this.revokedGrantIds.size > 0) {
       const revokedGrants: IRevokedGrantUpdate[] = [];
       for (const id of this.revokedGrantIds) {
@@ -800,6 +831,22 @@ export class GrantAggregate {
       promises.push(this._repo.storeInteractions(updates));
     }
 
+    if (this.updatedGrantInteractions.size > 0) {
+      const updates: IGrant[] = [];
+      for (const id of this.updatedGrantInteractions) {
+        const grant = this.grantMap.get(id);
+        if (!grant) {
+          this._logger.error(
+            `Grant ${id} missing from grantMap during flush (interactions)`
+          );
+          continue;
+        }
+        updates.push(grant);
+      }
+
+      promises.push(this._repo.storeInteractions(updates));
+    }
+
     if (this.revokedTokens.size > 0) {
       promises.push(
         this._repo.storeRevokedTokens([...this.revokedTokens.values()])
@@ -819,6 +866,8 @@ export class GrantAggregate {
       this.grantIdsWithRotatedTokens.clear();
       this.newGrantIds = [];
       this.newGrantInteractions.clear();
+      this.updatedGrantInteractions.clear();
+      this.finishedInteractiveGrantIds.clear();
     }
   }
 }

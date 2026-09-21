@@ -327,15 +327,9 @@ export class AuthClient {
     });
   }
 
-  acceptInteraction(
-    id: string,
-    interactRef: string,
-    nonce: string
-  ): Promise<HandleInteractionChoiceResult> {
+  acceptInteraction(id: string): Promise<HandleInteractionChoiceResult> {
     const request = new PbAcceptInteractionRequest();
     request.setId(id);
-    request.setInteractRef(interactRef);
-    request.setNonce(nonce);
 
     return new Promise((resolve, reject) => {
       this._grpcClient.acceptInteraction(
@@ -354,13 +348,9 @@ export class AuthClient {
     });
   }
 
-  rejectInteraction(
-    id: string,
-    nonce: string
-  ): Promise<HandleInteractionChoiceResult> {
+  rejectInteraction(id: string): Promise<HandleInteractionChoiceResult> {
     const request = new PbRejectInteractionRequest();
     request.setId(id);
-    request.setNonce(nonce);
 
     return new Promise((resolve, reject) => {
       this._grpcClient.rejectInteraction(

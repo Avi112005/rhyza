@@ -38,7 +38,8 @@ import {
   RotateTokenResponse,
   Grant,
   FinishInteractionRequest,
-  FinishInteractionResponse
+  FinishInteractionResponse,
+  HandleInteractionChoiceResponse
 } from 'auth-public-types-lib';
 
 import { IMessage, IMessageConsumer, IMessageProducer } from 'common-types-lib';
@@ -48,8 +49,8 @@ import {
   RevokeGrantCmd,
   RotateTokenCmd,
   RevokeTokenCmd,
-  AcceptInteractionCommand,
-  RejectInteractionCommand,
+  AcceptInteractionCmd,
+  RejectInteractionCmd,
   GrantCreateFailedEvent,
   GrantContinuedEvent,
   GrantContinueFailedEvent,
@@ -69,7 +70,8 @@ import {
   GrantInteractionStartFailedEvent,
   FinishInteractionCmd,
   GrantInteractionFinishedEvent,
-  GrantInteractionFinishFailedEvent
+  GrantInteractionFinishFailedEvent,
+  GrantInteractionChoiceFailedEvent
 } from 'auth-domain-lib';
 import crypto from 'crypto';
 import { IGrantRepository } from 'auth-domain-lib/src';
@@ -366,10 +368,9 @@ export class AuthServiceServer {
       const commandId = crypto.randomUUID();
       this._storePendingResponse(commandId, call, callback);
 
-      const cmd = new AcceptInteractionCommand(
+      const cmd = new AcceptInteractionCmd(
         {
-          id: call.request.getId(),
-          nonce: call.request.getNonce()
+          id: call.request.getId()
         },
         commandId
       );
@@ -378,10 +379,9 @@ export class AuthServiceServer {
       const commandId = crypto.randomUUID();
       this._storePendingResponse(commandId, call, callback);
 
-      const cmd = new RejectInteractionCommand(
+      const cmd = new RejectInteractionCmd(
         {
-          id: call.request.getId(),
-          nonce: call.request.getNonce()
+          id: call.request.getId()
         },
         commandId
       );
@@ -813,6 +813,23 @@ export class AuthServiceServer {
           .message,
         name:
           (event.payload as GrantInteractionStartFailedEvent['payload'])
+            .errorName || 'CommandError',
+        metadata: new grpc.Metadata()
+      });
+    } else if (AuthDomainEvent.isGrantInteractionChoiceHandledEvent(event)) {
+      const response = new HandleInteractionChoiceResponse();
+      response.setSuccess(true);
+      this._resolvePendingResponse(pending, requestId, null, response);
+    } else if (AuthDomainEvent.isGrantInteractionChoiceFailedEvent(event)) {
+      this._resolvePendingResponse(pending, requestId, {
+        code: grpc.status.INTERNAL,
+        message:
+          (event.payload as GrantInteractionChoiceFailedEvent['payload'])
+            .message || 'Command processing failed',
+        details: (event.payload as GrantInteractionChoiceFailedEvent['payload'])
+          .message,
+        name:
+          (event.payload as GrantInteractionChoiceFailedEvent['payload'])
             .errorName || 'CommandError',
         metadata: new grpc.Metadata()
       });
