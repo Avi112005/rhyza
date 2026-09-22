@@ -24,6 +24,7 @@ export interface CreateQuoteResult {
   senderWalletAddress: string;
   senderWalletAddressId: string;
   expiresAt: string;
+  createdAt: string;
   debitAmount: bigint;
   receiveAmount: bigint;
   exchangeRate: number;
@@ -53,6 +54,24 @@ export interface GetPaymentIntentResult {
   incomingAmount?: bigint;
   expiresAt?: string;
   destinationIlpAddress?: string;
+  remoteUrl?: string;
+}
+
+export interface GetQuoteResult {
+  id: string;
+  paymentIntentId: string;
+  state: string;
+  senderWalletAddress: string;
+  senderWalletAddressId: string;
+  createdAt: string;
+  expiresAt?: string;
+  debitAmount?: bigint;
+  receiveAmount?: bigint;
+  exchangeRate?: number;
+  sourceAmount?: bigint;
+  senderAssetCode?: string;
+  errorName?: string;
+  message?: string;
 }
 
 export interface GetPaymentResult {
