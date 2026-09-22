@@ -55,9 +55,17 @@ message CompletePaymentIntentRequest{
   string id = 1;
 }
 
+// Response containing the completed payment intent details.
 message CompletePaymentIntentResponse {
   string id = 1;
-  string state = 2;
+  string receiver_wallet_address = 2;
+  string state = 3;
+  string destination = 4;
+  optional uint64 incoming_amount = 5;
+  uint64 received_amount = 6;
+  string asset_code = 7;
+  uint32 asset_scale = 8;
+  optional string expires_at = 9;
 }
 
 /*

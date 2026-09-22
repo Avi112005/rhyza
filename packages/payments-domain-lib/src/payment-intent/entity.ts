@@ -1435,9 +1435,6 @@ export class PaymentIntent implements IPaymentIntent {
     const { receiveAmount } = payment.completeRemote();
     this._receivedAmount += receiveAmount;
 
-    if (this.isIncomingAmountMet) {
-      this._state = 'COMPLETED';
-    }
     return payment.toObject();
   }
 

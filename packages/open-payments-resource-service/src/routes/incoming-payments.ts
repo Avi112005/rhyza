@@ -109,9 +109,7 @@ export async function incomingPaymentRoutes(
   server.get<{
     Params: { id: string };
     Reply:
-      | (components['schemas']['incoming-payment'] & {
-          destinationIlpAddress?: string;
-        })
+      | components['schemas']['incoming-payment-with-methods']
       | components['schemas']['error-response'];
   }>('/incoming-payments/:id', async (request, reply) => {
     const { id } = request.params;
@@ -130,12 +128,8 @@ export async function incomingPaymentRoutes(
       assetScale: paymentIntent.assetScale
     });
 
-    const response: components['schemas']['incoming-payment'] & {
-      destinationIlpAddress: string;
-      sharedSecret: string;
-    } = {
+    const response: components['schemas']['incoming-payment-with-methods'] = {
       id: paymentIntent.id,
-      expiresAt: paymentIntent.expiresAt,
       completed: paymentIntent.state === 'COMPLETED',
       walletAddress: paymentIntent.receiverWalletAddress,
       createdAt: new Date().toISOString(),
@@ -144,8 +138,13 @@ export async function incomingPaymentRoutes(
         assetCode: paymentIntent.assetCode,
         assetScale: paymentIntent.assetScale
       },
-      sharedSecret: streamCredentials.sharedSecret,
-      destinationIlpAddress: streamCredentials.ilpAddress
+      methods: [
+        {
+          type: 'ilp',
+          ilpAddress: streamCredentials.ilpAddress,
+          sharedSecret: streamCredentials.sharedSecret
+        }
+      ]
     };
 
     if (paymentIntent.incomingAmount != null) {
@@ -166,40 +165,21 @@ export async function incomingPaymentRoutes(
   server.post<{
     Params: { id: string };
     Reply:
-      | (components['schemas']['incoming-payment'] & {
-          destinationIlpAddress?: string;
-        })
+      | components['schemas']['incoming-payment']
       | components['schemas']['error-response'];
   }>('/incoming-payments/:id/complete', async (request, reply) => {
     const { id } = request.params;
 
-    try {
-      await paymentsClient.completePaymentIntent(id);
-    } catch (err) {
-      const httpStatus = httpStatusFromGrpcError(err);
-      return reply.status(httpStatus).send(toClientApiErrorResponse(err));
-    }
-
     let paymentIntent;
     try {
-      paymentIntent = await paymentsClient.getPaymentIntent(id);
+      paymentIntent = await paymentsClient.completePaymentIntent(id);
     } catch (err) {
       const httpStatus = httpStatusFromGrpcError(err);
       return reply.status(httpStatus).send(toClientApiErrorResponse(err));
     }
 
-    const streamCredentials = generateStreamCredentials(streamServer, {
-      paymentIntentId: paymentIntent.id,
-      assetCode: paymentIntent.assetCode,
-      assetScale: paymentIntent.assetScale
-    });
-
-    const response: components['schemas']['incoming-payment'] & {
-      destinationIlpAddress: string;
-      sharedSecret: string;
-    } = {
+    const response: components['schemas']['incoming-payment'] = {
       id: paymentIntent.id,
-      expiresAt: paymentIntent.expiresAt,
       completed: paymentIntent.state === 'COMPLETED',
       walletAddress: paymentIntent.receiverWalletAddress,
       createdAt: new Date().toISOString(),
@@ -207,9 +187,7 @@ export async function incomingPaymentRoutes(
         value: String(paymentIntent.receivedAmount),
         assetCode: paymentIntent.assetCode,
         assetScale: paymentIntent.assetScale
-      },
-      sharedSecret: streamCredentials.sharedSecret,
-      destinationIlpAddress: streamCredentials.ilpAddress
+      }
     };
 
     if (paymentIntent.incomingAmount != null) {

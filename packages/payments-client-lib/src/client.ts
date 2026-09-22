@@ -26,8 +26,8 @@ import {
 import {
   ApprovePaymentResult,
   CancelPaymentResult,
-  CompletePaymentIntentResult,
   CreatePaymentIntentResult,
+  CompletePaymentIntentResult,
   CreatePaymentResult,
   CreateQuoteResult,
   GetPaymentIntentResult,
@@ -144,9 +144,19 @@ export class PaymentsClient {
             return reject(error);
           }
 
+          const incomingAmount = response.getIncomingAmount();
+          const expiresAt = response.getExpiresAt();
+
           return resolve({
             id: response.getId(),
-            state: response.getState()
+            receiverWalletAddress: response.getReceiverWalletAddress(),
+            state: response.getState(),
+            destination: response.getDestination(),
+            receivedAmount: BigInt(response.getReceivedAmount()),
+            assetCode: response.getAssetCode(),
+            assetScale: response.getAssetScale(),
+            incomingAmount: incomingAmount ? BigInt(incomingAmount) : undefined,
+            expiresAt: expiresAt || undefined
           });
         }
       );
@@ -401,6 +411,27 @@ export class PaymentsClient {
         }
       );
     });
+  }
+
+  private _mapPaymentIntentResponse(
+    response: PbGetPaymentIntentResponse
+  ): GetPaymentIntentResult {
+    const incomingAmount = response.getIncomingAmount();
+    const expiresAt = response.getExpiresAt();
+    const destinationIlpAddress = response.getDestinationIlpAddress();
+
+    return {
+      id: response.getId(),
+      receiverWalletAddress: response.getReceiverWalletAddress(),
+      state: response.getState(),
+      destination: response.getDestination(),
+      receivedAmount: BigInt(response.getReceivedAmount()),
+      assetCode: response.getAssetCode(),
+      assetScale: response.getAssetScale(),
+      incomingAmount: incomingAmount ? BigInt(incomingAmount) : undefined,
+      expiresAt: expiresAt || undefined,
+      destinationIlpAddress: destinationIlpAddress || undefined
+    };
   }
 
   async getPayment(

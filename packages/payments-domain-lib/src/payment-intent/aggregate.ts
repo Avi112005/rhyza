@@ -75,7 +75,8 @@ import {
   InboundPaymentValidationFailedEvent,
   InboundPaymentAcceptedEvent,
   InboundPaymentFailedEvent,
-  InboundPaymentFinalizedEvent
+  InboundPaymentFinalizedEvent,
+  PaymentIntentCompletedPayload
 } from 'payments-public-types-lib';
 
 const fxKey = (
@@ -495,16 +496,7 @@ export class PaymentIntentAggregate {
       this.completedPaymentIntentIds.push(paymentIntent.id);
 
       return new PaymentIntentCompletedEvent(
-        {
-          id: paymentIntent.id,
-          createdAt: paymentIntent.createdAt,
-          expiresAt: paymentIntent.expiresAt,
-          receivedAmount: String(paymentIntent.receivedAmount),
-          incomingAmount: String(paymentIntent.incomingAmount),
-          state: paymentIntent.state,
-          assetCode: paymentIntent.assetCode,
-          assetScale: paymentIntent.assetScale
-        },
+        this._toCompletedPayload(paymentIntent),
         cmd.requestId
       );
     } catch (err) {
@@ -1064,16 +1056,7 @@ export class PaymentIntentAggregate {
         if (paymentIntent.state === 'COMPLETED') {
           events.push(
             new PaymentIntentCompletedEvent(
-              {
-                id: paymentIntent.id,
-                createdAt: paymentIntent.createdAt,
-                expiresAt: paymentIntent.expiresAt,
-                receivedAmount: String(paymentIntent.receivedAmount),
-                incomingAmount: String(paymentIntent.incomingAmount),
-                state: paymentIntent.state,
-                assetCode: paymentIntent.assetCode,
-                assetScale: paymentIntent.assetScale
-              },
+              this._toCompletedPayload(paymentIntent),
               cmd.requestId
             )
           );
@@ -1445,16 +1428,7 @@ export class PaymentIntentAggregate {
       if (paymentIntent.state === 'COMPLETED') {
         events.push(
           new PaymentIntentCompletedEvent(
-            {
-              id: paymentIntent.id,
-              createdAt: paymentIntent.createdAt,
-              expiresAt: paymentIntent.expiresAt,
-              receivedAmount: String(paymentIntent.receivedAmount),
-              incomingAmount: String(paymentIntent.incomingAmount),
-              state: paymentIntent.state,
-              assetCode: paymentIntent.assetCode,
-              assetScale: paymentIntent.assetScale
-            },
+            this._toCompletedPayload(paymentIntent),
             cmd.requestId
           )
         );
@@ -1787,16 +1761,7 @@ export class PaymentIntentAggregate {
       if (paymentIntent.state === 'COMPLETED') {
         events.push(
           new PaymentIntentCompletedEvent(
-            {
-              id: paymentIntent.id,
-              createdAt: paymentIntent.createdAt,
-              expiresAt: paymentIntent.expiresAt,
-              receivedAmount: String(paymentIntent.receivedAmount),
-              incomingAmount: String(paymentIntent.incomingAmount),
-              state: paymentIntent.state,
-              assetCode: paymentIntent.assetCode,
-              assetScale: paymentIntent.assetScale
-            },
+            this._toCompletedPayload(paymentIntent),
             cmd.requestId
           )
         );
@@ -1949,6 +1914,28 @@ export class PaymentIntentAggregate {
         this.remotePaymentIntentFetchErrors.set(proposedId, resolvedError);
       }
     }
+  }
+
+  private _toCompletedPayload(
+    paymentIntent: PaymentIntent
+  ): PaymentIntentCompletedPayload {
+    return {
+      id: paymentIntent.id,
+      createdAt: paymentIntent.createdAt,
+      expiresAt: paymentIntent.expiresAt,
+      receivedAmount: String(paymentIntent.receivedAmount),
+      incomingAmount:
+        paymentIntent.incomingAmount != null
+          ? String(paymentIntent.incomingAmount)
+          : null,
+      state: paymentIntent.state,
+      receiverWalletAddress: paymentIntent.receiverWalletAddress,
+      receiverWalletAddressId: paymentIntent.receiverWalletAddressId,
+      destination: paymentIntent.destination,
+      destinationIlpAddress: paymentIntent.destinationIlpAddress,
+      assetCode: paymentIntent.assetCode,
+      assetScale: paymentIntent.assetScale
+    };
   }
 
   private _collectIlpAddress(cmd: CreateQuoteCmd, into: Set<string>): void {

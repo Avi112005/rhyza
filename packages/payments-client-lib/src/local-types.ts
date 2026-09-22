@@ -15,7 +15,14 @@ export interface CreatePaymentIntentResult {
 
 export interface CompletePaymentIntentResult {
   id: string;
+  receiverWalletAddress: string;
   state: string;
+  destination: string;
+  receivedAmount: bigint;
+  assetCode: string;
+  assetScale: number;
+  incomingAmount?: bigint;
+  expiresAt?: string;
 }
 
 export interface CreateQuoteResult {
