@@ -20,8 +20,14 @@ import {
   GetPaymentIntentResponse as PbGetPaymentIntentResponse,
   GetPaymentRequest as PbGetPaymentRequest,
   GetPaymentResponse as PbGetPaymentResponse,
+  GetPaymentIntentsPageRequest as PbGetPaymentIntentsPageRequest,
+  GetPaymentsPageRequest as PbGetPaymentsPageRequest,
+  Amount as PbAmount,
+  PaymentIntent as PbPaymentIntent,
+  Payment as PbPayment,
   CancelPaymentRequest as PbCancelPaymentRequest,
-  CancelPaymentResponse as PbCancelPaymentResponse
+  CancelPaymentResponse as PbCancelPaymentResponse,
+  SortOrder as PbSortOrder
 } from 'payments-public-types-lib';
 import {
   ApprovePaymentResult,
@@ -33,6 +39,9 @@ import {
   GetPaymentIntentResult,
   GetPaymentResult,
   GetQuoteResult,
+  IAmount,
+  IPage,
+  IPageQuery,
   IncomingPaymentInput
 } from './local-types';
 
@@ -156,7 +165,8 @@ export class PaymentsClient {
             assetCode: response.getAssetCode(),
             assetScale: response.getAssetScale(),
             incomingAmount: incomingAmount ? BigInt(incomingAmount) : undefined,
-            expiresAt: expiresAt || undefined
+            expiresAt: expiresAt || undefined,
+            createdAt: response.getCreatedAt()
           });
         }
       );
@@ -342,23 +352,17 @@ export class PaymentsClient {
             return reject(error);
           }
 
-          const incomingAmount = response.getIncomingAmount();
-          const expiresAt = response.getExpiresAt();
-          const destinationIlpAddress = response.getDestinationIlpAddress();
+          const paymentIntent = response.getPaymentIntent();
+          if (!paymentIntent) {
+            return reject(
+              createServiceError(
+                status.INTERNAL,
+                'Response missing payment intent'
+              )
+            );
+          }
 
-          return resolve({
-            id: response.getId(),
-            receiverWalletAddress: response.getReceiverWalletAddress(),
-            state: response.getState(),
-            destination: response.getDestination(),
-            receivedAmount: BigInt(response.getReceivedAmount()),
-            assetCode: response.getAssetCode(),
-            assetScale: response.getAssetScale(),
-            incomingAmount: incomingAmount ? BigInt(incomingAmount) : undefined,
-            expiresAt: expiresAt || undefined,
-            destinationIlpAddress: destinationIlpAddress || undefined,
-            remoteUrl: response.getRemoteUrl() || undefined
-          });
+          return resolve(PaymentsClient._paymentIntentFromPb(paymentIntent));
         }
       );
     });
@@ -413,27 +417,6 @@ export class PaymentsClient {
     });
   }
 
-  private _mapPaymentIntentResponse(
-    response: PbGetPaymentIntentResponse
-  ): GetPaymentIntentResult {
-    const incomingAmount = response.getIncomingAmount();
-    const expiresAt = response.getExpiresAt();
-    const destinationIlpAddress = response.getDestinationIlpAddress();
-
-    return {
-      id: response.getId(),
-      receiverWalletAddress: response.getReceiverWalletAddress(),
-      state: response.getState(),
-      destination: response.getDestination(),
-      receivedAmount: BigInt(response.getReceivedAmount()),
-      assetCode: response.getAssetCode(),
-      assetScale: response.getAssetScale(),
-      incomingAmount: incomingAmount ? BigInt(incomingAmount) : undefined,
-      expiresAt: expiresAt || undefined,
-      destinationIlpAddress: destinationIlpAddress || undefined
-    };
-  }
-
   async getPayment(
     paymentIntentId: string,
     id: string
@@ -451,23 +434,218 @@ export class PaymentsClient {
             return reject(error);
           }
 
-          const quoteId = response.getQuoteId();
+          const payment = response.getPayment();
+          if (!payment) {
+            return reject(
+              createServiceError(status.INTERNAL, 'Response missing payment')
+            );
+          }
 
-          return resolve({
-            id: response.getId(),
-            state: response.getState(),
-            senderWalletAddress: response.getSenderWalletAddress(),
-            senderWalletAddressId: response.getSenderWalletAddressId(),
-            paymentIntentId: response.getPaymentIntentId(),
-            assetCode: response.getAssetCode(),
-            assetScale: response.getAssetScale(),
-            quoteId: quoteId || undefined,
-            debitAmount: BigInt(response.getDebitAmount()),
-            receiveAmount: BigInt(response.getReceiveAmount()),
-            sentAmount: BigInt(response.getSentAmount())
-          });
+          return resolve(PaymentsClient._paymentFromPb(payment));
         }
       );
     });
+  }
+
+  async getPaymentIntentsPage(
+    query: IPageQuery = {}
+  ): Promise<IPage<GetPaymentIntentResult>> {
+    const { cursor, limit, backwards, sortOrder } =
+      PaymentsClient._pageArgs(query);
+
+    const request = new PbGetPaymentIntentsPageRequest();
+    if (query.walletAddressId) {
+      request.setWalletAddressId(query.walletAddressId);
+    }
+    if (cursor) request.setCursor(cursor);
+    request.setLimit(limit);
+    request.setBackwards(backwards);
+    request.setSortOrder(sortOrder);
+
+    return new Promise((resolve, reject) => {
+      this._grpcClient.getPaymentIntentsPage(request, (error, response) => {
+        if (error) {
+          console.error(error);
+          return reject(error);
+        }
+
+        return resolve({
+          items: response
+            .getPaymentIntentsList()
+            .map((pb) => PaymentsClient._paymentIntentFromPb(pb)),
+          pagination: {
+            startCursor: response.getStartCursor() || undefined,
+            endCursor: response.getEndCursor() || undefined,
+            hasNextPage: response.getHasNextPage(),
+            hasPreviousPage: response.getHasPreviousPage()
+          }
+        });
+      });
+    });
+  }
+
+  async getPaymentsPage(
+    query: IPageQuery & { paymentIntentId?: string } = {}
+  ): Promise<IPage<GetPaymentResult>> {
+    const { cursor, limit, backwards, sortOrder } =
+      PaymentsClient._pageArgs(query);
+
+    const request = new PbGetPaymentsPageRequest();
+    if (query.walletAddressId) {
+      request.setWalletAddressId(query.walletAddressId);
+    }
+    if (query.paymentIntentId) {
+      request.setPaymentIntentId(query.paymentIntentId);
+    }
+    if (cursor) request.setCursor(cursor);
+    request.setLimit(limit);
+    request.setBackwards(backwards);
+    request.setSortOrder(sortOrder);
+
+    return new Promise((resolve, reject) => {
+      this._grpcClient.getPaymentsPage(request, (error, response) => {
+        if (error) {
+          console.error(error);
+          return reject(error);
+        }
+
+        return resolve({
+          items: response
+            .getPaymentsList()
+            .map((pb) => PaymentsClient._paymentFromPb(pb)),
+          pagination: {
+            startCursor: response.getStartCursor() || undefined,
+            endCursor: response.getEndCursor() || undefined,
+            hasNextPage: response.getHasNextPage(),
+            hasPreviousPage: response.getHasPreviousPage()
+          }
+        });
+      });
+    });
+  }
+
+  // Maps first/last query params (Open Payments style) onto the gRPC
+  // limit/backwards request shape, enforcing the shared validation rules.
+  private static _pageArgs(query: IPageQuery): {
+    cursor?: string;
+    limit: number;
+    backwards: boolean;
+    sortOrder: PbSortOrder;
+  } {
+    const { cursor, first, last, sortOrder } = query;
+
+    if (sortOrder != null && sortOrder !== 'asc' && sortOrder !== 'desc') {
+      throw createServiceError(
+        status.INVALID_ARGUMENT,
+        "'sortOrder' must be 'asc' or 'desc'"
+      );
+    }
+
+    if (first != null && last != null) {
+      throw createServiceError(
+        status.INVALID_ARGUMENT,
+        "Cannot provide both 'first' and 'last'"
+      );
+    }
+    if (last != null && cursor == null) {
+      throw createServiceError(
+        status.INVALID_ARGUMENT,
+        "'last' requires 'cursor'"
+      );
+    }
+    for (const [name, value] of [
+      ['first', first],
+      ['last', last]
+    ] as const) {
+      if (value != null && (!Number.isInteger(value) || value < 1)) {
+        throw createServiceError(
+          status.INVALID_ARGUMENT,
+          `'${name}' must be a positive integer`
+        );
+      }
+    }
+
+    return {
+      cursor,
+      limit: last ?? first ?? 0, // 0 => server default
+      backwards: last != null,
+      // Unset => UNSPECIFIED, letting the server apply its default order.
+      sortOrder:
+        sortOrder === 'asc'
+          ? PbSortOrder.SORT_ORDER_ASC
+          : sortOrder === 'desc'
+            ? PbSortOrder.SORT_ORDER_DESC
+            : PbSortOrder.SORT_ORDER_UNSPECIFIED
+    };
+  }
+
+  private static _paymentIntentFromPb(
+    response: PbPaymentIntent
+  ): GetPaymentIntentResult {
+    const incomingAmount = response.getIncomingAmount();
+    const expiresAt = response.getExpiresAt();
+    const destinationIlpAddress = response.getDestinationIlpAddress();
+
+    return {
+      id: response.getId(),
+      receiverWalletAddress: response.getReceiverWalletAddress(),
+      state: response.getState(),
+      destination: response.getDestination(),
+      receivedAmount: BigInt(response.getReceivedAmount()),
+      assetCode: response.getAssetCode(),
+      assetScale: response.getAssetScale(),
+      incomingAmount: incomingAmount ? BigInt(incomingAmount) : undefined,
+      expiresAt: expiresAt || undefined,
+      destinationIlpAddress: destinationIlpAddress || undefined,
+      createdAt: response.getCreatedAt(),
+      remoteUrl: response.getRemoteUrl() || undefined
+    };
+  }
+
+  private static _paymentFromPb(response: PbPayment): GetPaymentResult {
+    const quoteId = response.getQuoteId();
+    const remoteUrl = response.getRemoteUrl();
+    const failReason = response.getFailReason();
+
+    return {
+      id: response.getId(),
+      state: response.getState(),
+      senderWalletAddress: response.getSenderWalletAddress(),
+      senderWalletAddressId: response.getSenderWalletAddressId(),
+      paymentIntentId: response.getPaymentIntentId(),
+      quoteId: quoteId || undefined,
+      debitAmount: PaymentsClient._amountFromPb(
+        response.getDebitAmount(),
+        'debitAmount'
+      ),
+      receiveAmount: PaymentsClient._amountFromPb(
+        response.getReceiveAmount(),
+        'receiveAmount'
+      ),
+      sentAmount: PaymentsClient._amountFromPb(
+        response.getSentAmount(),
+        'sentAmount'
+      ),
+      createdAt: response.getCreatedAt(),
+      remoteUrl: remoteUrl || undefined,
+      failReason: failReason || undefined
+    };
+  }
+
+  private static _amountFromPb(
+    pbAmount: PbAmount | undefined,
+    field: string
+  ): IAmount {
+    if (!pbAmount) {
+      throw createServiceError(
+        status.INTERNAL,
+        `Missing '${field}' on payment response`
+      );
+    }
+    return {
+      value: BigInt(pbAmount.getValue()),
+      assetCode: pbAmount.getAssetCode(),
+      assetScale: pbAmount.getAssetScale()
+    };
   }
 }

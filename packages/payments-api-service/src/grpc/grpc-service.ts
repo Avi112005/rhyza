@@ -27,19 +27,35 @@ import {
   GetPaymentIntentResponse,
   GetPaymentRequest,
   GetPaymentResponse,
+  GetPaymentIntentsPageRequest,
+  GetPaymentIntentsPageResponse,
+  GetPaymentsPageRequest,
+  GetPaymentsPageResponse,
+  Amount,
+  PaymentIntent,
+  Payment,
   HealthCheckRequest,
   HealthCheckResponse,
   HealthService,
   PaymentsGrpcService,
   PaymentIntentDomainEvent,
   GetQuoteRequest,
-  GetQuoteResponse
+  GetQuoteResponse,
+  SortOrder as PbSortOrder
 } from 'payments-public-types-lib';
-import { IPaymentIntentRepository } from 'payments-domain-lib';
+import { CursorContext, decodeCursor, encodeCursor } from './cursor.js';
+import {
+  DEFAULT_SORT_ORDER,
+  IPaymentIntent,
+  IPaymentIntentRepository,
+  ISentPayment,
+  SortOrder
+} from 'payments-domain-lib';
 import {
   AppErrorType,
   ILogger,
   IMessage,
+  InvalidArgument,
   IMessageConsumer,
   IMessageProducer
 } from 'common-types-lib';
@@ -62,6 +78,8 @@ interface PendingResponse {
 }
 
 export class PaymentsServiceServer {
+  private static readonly DEFAULT_PAGE_LIMIT = 20;
+  private static readonly MAX_PAGE_LIMIT = 100;
   private readonly _instanceId: string;
   private readonly _serverUrl: string;
   private readonly _server: grpc.Server;
@@ -132,7 +150,9 @@ export class PaymentsServiceServer {
       cancelPayment: this._handleUnary.bind(this),
       getPaymentIntent: this._handleGetPaymentIntent.bind(this),
       getQuote: this._handleGetQuote.bind(this),
-      getPayment: this._handleGetPayment.bind(this)
+      getPayment: this._handleGetPayment.bind(this),
+      getPaymentIntentsPage: this._handleGetPaymentIntentsPage.bind(this),
+      getPaymentsPage: this._handleGetPaymentsPage.bind(this)
     });
   }
 
@@ -335,25 +355,7 @@ export class PaymentsServiceServer {
       }
 
       const response = new GetPaymentIntentResponse();
-      response.setId(paymentIntent.id);
-      response.setReceiverWalletAddress(paymentIntent.receiverWalletAddress);
-      response.setState(paymentIntent.state);
-      response.setDestination(paymentIntent.destination);
-      response.setReceivedAmount(Number(paymentIntent.receivedAmount));
-      response.setAssetCode(paymentIntent.assetCode);
-      response.setAssetScale(paymentIntent.assetScale);
-      if (paymentIntent.incomingAmount != null) {
-        response.setIncomingAmount(Number(paymentIntent.incomingAmount));
-      }
-      if (paymentIntent.expiresAt) {
-        response.setExpiresAt(new Date(paymentIntent.expiresAt).toISOString());
-      }
-      if (paymentIntent.destinationIlpAddress) {
-        response.setDestinationIlpAddress(paymentIntent.destinationIlpAddress);
-      }
-      if (paymentIntent.remoteUrl) {
-        response.setRemoteUrl(paymentIntent.remoteUrl);
-      }
+      response.setPaymentIntent(this._toPbPaymentIntent(paymentIntent));
 
       callback(null, response);
     } catch (err) {
@@ -454,24 +456,220 @@ export class PaymentsServiceServer {
       }
 
       const response = new GetPaymentResponse();
-      response.setId(payment.id);
-      response.setState(payment.state);
-      response.setSenderWalletAddress(payment.senderWalletAddress);
-      response.setSenderWalletAddressId(payment.senderWalletAddressId);
-      response.setPaymentIntentId(payment.paymentIntentId);
-      response.setAssetCode(payment.assetCode);
-      response.setAssetScale(payment.assetScale);
-      response.setDebitAmount(Number(payment.debitAmount));
-      response.setReceiveAmount(Number(payment.receiveAmount));
-      response.setSentAmount(Number(payment.sentAmount));
-      if (payment.quoteId) {
-        response.setQuoteId(payment.quoteId);
-      }
+      response.setPayment(this._toPbPayment(payment, paymentIntent));
 
       callback(null, response);
     } catch (err) {
       callback({ code: grpc.status.INTERNAL, message: (err as Error).message });
     }
+  }
+
+  private async _handleGetPaymentIntentsPage(
+    call: ServerUnaryCall<
+      GetPaymentIntentsPageRequest,
+      GetPaymentIntentsPageResponse
+    >,
+    callback: sendUnaryData<GetPaymentIntentsPageResponse>
+  ): Promise<void> {
+    try {
+      const request = call.request;
+      const cursorContext: CursorContext = {
+        sortOrder: this._pageSortOrder(request.getSortOrder()),
+        walletAddressId: request.getWalletAddressId() || undefined
+      };
+      const cursor = request.getCursor() || undefined;
+
+      const page = await this._repo.fetchPaymentIntentsPage({
+        walletAddressId: cursorContext.walletAddressId,
+        cursor: cursor && decodeCursor(cursor, cursorContext),
+        limit: this._clampPageLimit(request.getLimit()),
+        backwards: request.getBackwards(),
+        sortOrder: cursorContext.sortOrder
+      });
+
+      const response = new GetPaymentIntentsPageResponse();
+      response.setPaymentIntentsList(
+        page.items.map((intent) => this._toPbPaymentIntent(intent))
+      );
+      response.setHasNextPage(page.hasNextPage);
+      response.setHasPreviousPage(page.hasPreviousPage);
+      if (page.items.length > 0) {
+        response.setStartCursor(encodeCursor(page.items[0].id, cursorContext));
+        response.setEndCursor(
+          encodeCursor(page.items[page.items.length - 1].id, cursorContext)
+        );
+      }
+
+      callback(null, response);
+    } catch (err) {
+      callback(this._pageErrorToStatus(err));
+    }
+  }
+
+  private async _handleGetPaymentsPage(
+    call: ServerUnaryCall<GetPaymentsPageRequest, GetPaymentsPageResponse>,
+    callback: sendUnaryData<GetPaymentsPageResponse>
+  ): Promise<void> {
+    try {
+      const request = call.request;
+      const cursorContext: CursorContext = {
+        sortOrder: this._pageSortOrder(request.getSortOrder()),
+        walletAddressId: request.getWalletAddressId() || undefined,
+        paymentIntentId: request.getPaymentIntentId() || undefined
+      };
+      const cursor = request.getCursor() || undefined;
+
+      const page = await this._repo.fetchSentPaymentsPage({
+        walletAddressId: cursorContext.walletAddressId,
+        paymentIntentId: cursorContext.paymentIntentId,
+        cursor: cursor && decodeCursor(cursor, cursorContext),
+        limit: this._clampPageLimit(request.getLimit()),
+        backwards: request.getBackwards(),
+        sortOrder: cursorContext.sortOrder
+      });
+
+      // Hydrate parent intents in one batched fetch — receiveAmount is
+      // denominated in the parent intent's (receive-side) asset, and the
+      // OP receiver URL comes from the parent's remoteUrl.
+      const intentIds = [...new Set(page.items.map((p) => p.paymentIntentId))];
+      const parentIntents = await this._repo.fetchByIds(intentIds);
+      const intentById = new Map(parentIntents.map((i) => [i.id, i]));
+
+      const response = new GetPaymentsPageResponse();
+      response.setPaymentsList(
+        page.items.map((payment) => {
+          const parent = intentById.get(payment.paymentIntentId);
+          if (!parent) {
+            throw new Error(
+              `Parent payment intent '${payment.paymentIntentId}' not found for payment '${payment.id}'`
+            );
+          }
+          return this._toPbPayment(payment, parent);
+        })
+      );
+      response.setHasNextPage(page.hasNextPage);
+      response.setHasPreviousPage(page.hasPreviousPage);
+      if (page.items.length > 0) {
+        response.setStartCursor(encodeCursor(page.items[0].id, cursorContext));
+        response.setEndCursor(
+          encodeCursor(page.items[page.items.length - 1].id, cursorContext)
+        );
+      }
+
+      callback(null, response);
+    } catch (err) {
+      callback(this._pageErrorToStatus(err));
+    }
+  }
+
+  private _clampPageLimit(limit: number): number {
+    if (!limit) return PaymentsServiceServer.DEFAULT_PAGE_LIMIT;
+    return Math.min(limit, PaymentsServiceServer.MAX_PAGE_LIMIT);
+  }
+
+  private _pageSortOrder(sortOrder: PbSortOrder): SortOrder {
+    switch (sortOrder) {
+      case PbSortOrder.SORT_ORDER_ASC:
+        return 'asc';
+      case PbSortOrder.SORT_ORDER_DESC:
+        return 'desc';
+      default:
+        return DEFAULT_SORT_ORDER;
+    }
+  }
+
+  private _pageErrorToStatus(err: unknown): grpc.ServiceError {
+    if (err instanceof InvalidArgument) {
+      return {
+        code: grpc.status.INVALID_ARGUMENT,
+        message: (err as Error).message
+      } as grpc.ServiceError;
+    }
+    return {
+      code: grpc.status.INTERNAL,
+      message: (err as Error).message
+    } as grpc.ServiceError;
+  }
+
+  private _toPbPaymentIntent(
+    paymentIntent: Omit<IPaymentIntent, 'sentPayments' | 'inboundPayments'>
+  ): PaymentIntent {
+    const pbPaymentIntent = new PaymentIntent();
+    pbPaymentIntent.setId(paymentIntent.id);
+    pbPaymentIntent.setReceiverWalletAddress(
+      paymentIntent.receiverWalletAddress
+    );
+    pbPaymentIntent.setState(paymentIntent.state);
+    pbPaymentIntent.setDestination(paymentIntent.destination);
+    pbPaymentIntent.setReceivedAmount(Number(paymentIntent.receivedAmount));
+    pbPaymentIntent.setAssetCode(paymentIntent.assetCode);
+    pbPaymentIntent.setAssetScale(paymentIntent.assetScale);
+    pbPaymentIntent.setCreatedAt(
+      new Date(paymentIntent.createdAt).toISOString()
+    );
+    if (paymentIntent.incomingAmount != null) {
+      pbPaymentIntent.setIncomingAmount(Number(paymentIntent.incomingAmount));
+    }
+    if (paymentIntent.expiresAt) {
+      pbPaymentIntent.setExpiresAt(
+        new Date(paymentIntent.expiresAt).toISOString()
+      );
+    }
+    if (paymentIntent.destinationIlpAddress) {
+      pbPaymentIntent.setDestinationIlpAddress(
+        paymentIntent.destinationIlpAddress
+      );
+    }
+    if (paymentIntent.remoteUrl) {
+      pbPaymentIntent.setRemoteUrl(paymentIntent.remoteUrl);
+    }
+    return pbPaymentIntent;
+  }
+
+  private _toPbPayment(
+    payment: ISentPayment,
+    parentIntent: { assetCode: string; assetScale: number; remoteUrl?: string }
+  ): Payment {
+    const pbPayment = new Payment();
+    pbPayment.setId(payment.id);
+    pbPayment.setState(payment.state);
+    pbPayment.setSenderWalletAddress(payment.senderWalletAddress);
+    pbPayment.setSenderWalletAddressId(payment.senderWalletAddressId);
+    pbPayment.setPaymentIntentId(payment.paymentIntentId);
+    pbPayment.setCreatedAt(new Date(payment.createdAt).toISOString());
+    if (payment.quoteId) {
+      pbPayment.setQuoteId(payment.quoteId);
+    }
+    if (payment.failReason) {
+      pbPayment.setFailReason(payment.failReason);
+    }
+    if (parentIntent.remoteUrl) {
+      pbPayment.setRemoteUrl(parentIntent.remoteUrl);
+    }
+
+    // debitAmount and sentAmount are denominated in the payment's own
+    // (sender-side) asset pair.
+    const debitAmount = new Amount();
+    debitAmount.setValue(Number(payment.debitAmount));
+    debitAmount.setAssetCode(payment.assetCode);
+    debitAmount.setAssetScale(payment.assetScale);
+    pbPayment.setDebitAmount(debitAmount);
+
+    const sentAmount = new Amount();
+    sentAmount.setValue(Number(payment.sentAmount));
+    sentAmount.setAssetCode(payment.assetCode);
+    sentAmount.setAssetScale(payment.assetScale);
+    pbPayment.setSentAmount(sentAmount);
+
+    // receiveAmount is denominated in the parent intent's (receive-side)
+    // asset — a different currency for cross-currency payments.
+    const receiveAmount = new Amount();
+    receiveAmount.setValue(Number(payment.receiveAmount));
+    receiveAmount.setAssetCode(parentIntent.assetCode);
+    receiveAmount.setAssetScale(parentIntent.assetScale);
+    pbPayment.setReceiveAmount(receiveAmount);
+
+    return pbPayment;
   }
 
   private _storePendingResponse(
@@ -541,6 +739,7 @@ export class PaymentsServiceServer {
       response.setReceivedAmount(Number(evt.payload.receivedAmount));
       response.setAssetCode(evt.payload.assetCode);
       response.setAssetScale(evt.payload.assetScale);
+      response.setCreatedAt(new Date(evt.payload.createdAt).toISOString());
       if (evt.payload.incomingAmount != null) {
         response.setIncomingAmount(Number(evt.payload.incomingAmount));
       }
