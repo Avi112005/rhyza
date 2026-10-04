@@ -12,7 +12,6 @@ import {
 } from 'implementations-lib';
 import {
   ILedgerEventSourcingRepository,
-  LedgerAggregate,
   ILedgerReadSideRepository,
   PeerAggregate,
   IPalPeerRepository,
@@ -79,9 +78,24 @@ const OPEN_TELEMETRY_COLLECTOR_URL =
 
 const REDIS_URL = process.env['REDIS_URL'] || 'redis://localhost:6379';
 
-const MAX_EVENTS_PER_SNAPSHOT = 10;
-const MAX_SECS_SINCE_LAST_SNAPSHOT = 600;
-const MIN_SECS_SINCE_LAST_SNAPSHOT = 10;
+const MAX_EVENTS_PER_SNAPSHOT = process.env['MAX_EVENTS_PER_SNAPSHOT']
+  ? parseInt(process.env['MAX_EVENTS_PER_SNAPSHOT'])
+  : 1000;
+const MAX_SECS_SINCE_LAST_SNAPSHOT = process.env['MAX_SECS_SINCE_LAST_SNAPSHOT']
+  ? parseInt(process.env['MAX_SECS_SINCE_LAST_SNAPSHOT'])
+  : 3600;
+
+const KAFKA_LOW_LATENCY_BATCH_TIMEOUT_MS = process.env[
+  'KAFKA_LOW_LATENCY_BATCH_TIMEOUT_MS'
+]
+  ? parseInt(process.env['KAFKA_LOW_LATENCY_BATCH_TIMEOUT_MS'])
+  : 15;
+
+const KAFKA_THROUGHPUT_BATCH_TIMEOUT_MS = process.env[
+  'KAFKA_THROUGHPUT_BATCH_TIMEOUT_MS'
+]
+  ? parseInt(process.env['KAFKA_THROUGHPUT_BATCH_TIMEOUT_MS'])
+  : 500;
 
 // Message Consumer/Publisher
 const KAFKA_URL =
@@ -99,9 +113,9 @@ const kafkaProducerCommonOptions: KafkaProducerOptions = {
 };
 const kafkaConsumerCommonOptions: KafkaConsumerOptions = {
   consumerGroupId: 'ES_LEDGER_POC_STATE_EVENTHANDLER_SVC',
-  batchTimeoutMs: 500,
   batchSize: 50_000
 };
+
 const MONGO_URL = process.env['MONGO_URL'] || 'mongodb://localhost:27017/';
 
 const EXCHANGE_RATES_URL =
@@ -222,6 +236,7 @@ export class PalLedgerEventHandlerService {
         .register(new WithdrawFromPeerCmdSerde());
 
       msgSerializationFactory = MessageSerializationFactory.instance();
+      msgSerializationFactory.setTelemetry(this._telemetryService);
     }
     this._msgSerializationFactory = msgSerializationFactory;
 
@@ -230,6 +245,7 @@ export class PalLedgerEventHandlerService {
         .withLogger(this._logger)
         .withBrokerList(KAFKA_URL)
         .withClientId(INSTANCE_ID)
+        .withTelemetry(this._telemetryService)
         .withSerializerFactory(MessageSerializationFactory.instance());
     }
     this._kafkaBuilder = kafkaBuilder;
@@ -274,14 +290,14 @@ export class PalLedgerEventHandlerService {
     this._producer = producer;
 
     /*
-     * Instantiate state event habdlers - snapshotter and projector
+     * Instantiate state event handlers - snapshotter and projector
      */
 
     if (!stateEventsConsumer) {
       const consumerOpts: KafkaLowLevelConsumerOptions = {
-        consumerGroupId: kafkaConsumerCommonOptions.consumerGroupId,
+        consumerGroupId: `${kafkaConsumerCommonOptions.consumerGroupId}_stateEventHandler`,
         batchSize: kafkaConsumerCommonOptions.batchSize,
-        batchTimeoutMs: kafkaConsumerCommonOptions.batchTimeoutMs,
+        batchTimeoutMs: KAFKA_THROUGHPUT_BATCH_TIMEOUT_MS,
         autoOffsetReset: kafkaConsumerCommonOptions.autoOffsetReset
       };
       stateEventsConsumer =
@@ -289,27 +305,19 @@ export class PalLedgerEventHandlerService {
     }
     this._stateEventsConsumer = stateEventsConsumer;
 
-    // Instantiate the aggregate to be used by the snapshotter and read side projections
-    const ledgerAggregate = new LedgerAggregate(
-      this._esRepo,
-      this._producer,
-      logger,
-      this._telemetryService
-    );
-
     const configs: LedgerStateEventHandlerConfigs = {
       maxStateEventsBetweenSnapshots: MAX_EVENTS_PER_SNAPSHOT,
-      maxTimeBetweenSnapshotsMs: MAX_SECS_SINCE_LAST_SNAPSHOT * 1000,
-      minTimeBetweenSnapshotsMs: MIN_SECS_SINCE_LAST_SNAPSHOT * 1000
+      maxTimeBetweenSnapshotsMs: MAX_SECS_SINCE_LAST_SNAPSHOT * 1000
     };
 
     this._stateEventHandler = new LedgerStateEventHandler(
       configs,
-      ledgerAggregate,
       this._esRepo,
       this._stateEventsConsumer,
+      this._producer,
       this._readSideRepo,
-      this._logger
+      this._logger,
+      this._telemetryService
     );
 
     await this._stateEventHandler.init();
@@ -318,14 +326,14 @@ export class PalLedgerEventHandlerService {
     );
 
     /*
-     * Instantiate the Internal Event Handler
+     * Instantiate the Internal Event Handler - for internal sagas/integration
      */
 
     if (!internalEventsConsumer) {
       const consumerOpts: KafkaLowLevelConsumerOptions = {
-        consumerGroupId: kafkaConsumerCommonOptions.consumerGroupId,
+        consumerGroupId: `${kafkaConsumerCommonOptions.consumerGroupId}_internalEventHandler`,
         batchSize: kafkaConsumerCommonOptions.batchSize,
-        batchTimeoutMs: kafkaConsumerCommonOptions.batchTimeoutMs,
+        batchTimeoutMs: KAFKA_LOW_LATENCY_BATCH_TIMEOUT_MS,
         autoOffsetReset: kafkaConsumerCommonOptions.autoOffsetReset
       };
 
@@ -393,13 +401,13 @@ export class PalLedgerEventHandlerService {
     );
 
     /*
-     * Instantiate the integration event handler (external BC events)
+     * Instantiate the external BC events integration event handler
      */
     if (!integrationEventsConsumer) {
       const consumerOpts: KafkaLowLevelConsumerOptions = {
-        consumerGroupId: kafkaConsumerCommonOptions.consumerGroupId,
+        consumerGroupId: `${kafkaConsumerCommonOptions.consumerGroupId}_integrationEventHandler`,
         batchSize: kafkaConsumerCommonOptions.batchSize,
-        batchTimeoutMs: kafkaConsumerCommonOptions.batchTimeoutMs,
+        batchTimeoutMs: KAFKA_LOW_LATENCY_BATCH_TIMEOUT_MS,
         autoOffsetReset: kafkaConsumerCommonOptions.autoOffsetReset
       };
 
@@ -439,6 +447,14 @@ export class PalLedgerEventHandlerService {
     if (this._integrationEventsConsumer) {
       await this._integrationEventsConsumer.stop();
       await this._integrationEventsConsumer.disconnect(false);
+    }
+
+    if (this._internalEventHandler) {
+      await this._internalEventHandler.destroy();
+    }
+    if (this._internalEventsConsumer) {
+      await this._internalEventsConsumer.stop();
+      await this._internalEventsConsumer.disconnect(false);
     }
 
     if (this._producer) {

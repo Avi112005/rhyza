@@ -36,13 +36,13 @@ export class IntegrationEventHandler {
     msgProducer: IMessageProducer,
     logger: ILogger
   ) {
-    this._logger = logger;
+    this._logger = logger.child(this.constructor.name);
     this._msgConsumer = messageConsumer;
     this._msgProducer = msgProducer;
   }
 
   private async _handleMessageBatch(messages: IMessage[]) {
-    this._logger.info(`Received batch of ${messages.length} messages`);
+    this._logger.debug(`Received batch of ${messages.length} messages`);
     // NOTE: we shouldn't log ignored events, they can be the majority
 
     for (const msg of messages) {
