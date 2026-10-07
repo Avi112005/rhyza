@@ -6,6 +6,7 @@ export * from './AssetCreate';
 export * from './AssetCreateResponse';
 export * from './CancelPayment200Response';
 export * from './ErrorResponse';
+export * from './FxRateSet';
 export * from './JsonWebKey';
 export * from './LiquidityDeposit200Response';
 export * from './LiquidityDepositRequest';

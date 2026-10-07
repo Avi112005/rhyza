@@ -1,3 +1,11 @@
+# API Changelog 0.0.7 vs. 0.0.8
+
+
+## API Changes
+
+### POST /rates
+-  endpoint added
+
 # API Changelog 0.0.6 vs. 0.0.7
 
 ## API Changes
